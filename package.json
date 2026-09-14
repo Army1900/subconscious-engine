@@ -1,0 +1,26 @@
+{
+  "name": "subconscious-engine",
+  "private": true,
+  "version": "0.1.0",
+  "description": "在用户话语到达大模型之前，本地解析悬空指代并注入接地上下文",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "clean": "tsc -b tsconfig.json --clean",
+    "typecheck": "npm run build && npm run typecheck --workspaces --if-present",
+    "test": "npm run build && npm run test --workspaces --if-present",
+    "check": "npm run typecheck && npm run test",
+    "check-deps": "node scripts/check-deps.mjs",
+    "demo": "npm run build && npm run demo --workspace @subconscious/demo"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

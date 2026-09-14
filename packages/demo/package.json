@@ -1,0 +1,30 @@
+{
+  "name": "@subconscious/demo",
+  "version": "0.1.0",
+  "description": "离线端到端演示：fixture 会话（真实 SessionManager 写入）+ 真实 adapter handler 代码路径。",
+  "type": "module",
+  "main": "./dist/run.js",
+  "types": "./dist/run.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "demo": "node dist/run.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@subconscious/adapter-pi": "^0.1.0",
+    "@subconscious/core": "^0.1.0",
+    "@earendil-works/pi-coding-agent": "0.85.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
