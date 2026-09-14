@@ -17,3 +17,4 @@ jobs:
       - run: npm run check
       - run: npm run check-deps
       - run: npm run demo
+      - run: npm run smoke:pack

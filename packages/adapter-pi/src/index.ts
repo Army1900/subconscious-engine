@@ -41,6 +41,15 @@ export {
 export { createPiInteract } from "./interact.js";
 export type { PiInteractPort } from "./interact.js";
 export {
+  createEmbeddingDetectorResolver,
+  EMBEDDING_ENV_VAR,
+  EMBEDDING_LOAD_TIMEOUT_MS,
+  embeddingDetectorResolver,
+  isEmbeddingOptIn,
+  MODEL_DIR_ENV_VAR,
+} from "./embedding-optin.js";
+export type { EmbeddingDetectorResolver, EmbeddingLoadOptions } from "./embedding-optin.js";
+export {
   MAX_CHANGES_PER_SESSION,
   parseSessionJsonl,
   readSessionChanges,

@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 1.2（监督整改轮：新增 D13–D16，修正 M3 并行表述与图片链路边界） |
+| 文档版本 | 1.5（硬化轮：新增 D22 embedding opt-in 接线与独立消费者 smoke；D19–D21 见下） |
 | 关联 | [DESIGN.md](../DESIGN.md)、[SUPERVISION.md](SUPERVISION.md) |
 
 ---
@@ -204,3 +204,72 @@
 早期版本此处曾写"embedding 检测器、并行解析 → M3"。**勘误**：独立指代的并行解析已在 M1 交付（`parallel.test.ts` 的 barrier 测试锁定：独立指代并发解析、history-content 等待所属事件绑定、并发 enrich 不串数据）。M3 的范围只是**完善/优化**并行调度或引入 embedding 检索，不得把已交付能力后移到 M3。
 
 DESIGN.md §10 里程碑表（M3 含"多指代并行解析"）与 SUPERVISION.md 任务顺序（M3 含"并行解析与依赖顺序"）按监督约束保留原文不改；以本勘误为准：该项属**提前交付**而非删除目标——M3 对应工作收窄为"并行调度的完善/优化与依赖顺序硬化"，embedding 检测器目标不变。
+
+## D19. M3 embedding 检测器：接口形态、依赖形态与评估协议
+
+**问题**：DESIGN §4.1 要求 embedding 版检测器"仍输出同一接口"，但向量推理只能异步，而 `Detector.detect` 是同步契约；监督红线要求 core 零依赖、测试离线、缺模型回退规则且不阻塞 check；`scripts/check-deps.mjs` 要求新依赖显式 semver 且不得让未安装者构建失败。
+
+**决策**：
+
+1. **检测器接口：同步契约不动，异步能力可选叠加**。新增 `AsyncDetector extends Detector`（`detectAsync(prompt, ctx?)`）与 `DetectorContext { signal, remainingMs() }`；`EmbeddingDetector` 同时实现两者——同步 `detect()` 恒等于其规则回退输出（同步无法等待推理，fail-open 直落规则），永不抛出。`Detector`/`RuleDetector` 行为零改动。
+2. **引擎：异步检测在机器预算内运行**。`isAsyncDetector` 结构探测命中时，检测与解析共享同一 `DeadlineClock`（D3 单预算，检测耗时不给解析翻新预算）；detectAsync 抛错/悬挂/超时 → 回退其同步 `detect()`（withDeadline 兜底 + 层层 fail-open），且 enrich 返回前统一 dispose。纯同步检测器路径与 M1 逐字节一致（时钟仍在检测后才建）。
+3. **原型来源：示例集经同一 provider 就地嵌入**（而非 m3-01 设想的静态版本化向量文件）。版本化产物是**示例集**（`EMBEDDING_EXAMPLES_VERSION`）；原型 = 各类示例向量归一化均值。模型无关、维度自洽；换模型无需重新生成向量文件，维度不匹配只剩"provider 中途变性"一种受控回退路径。
+4. **分类与合并**：候选短语 = CJK 滑窗(2–6) ∪ 拉丁词 n-gram(1–4，token 边界纪律：`lastIndexOf`/`this-file.txt` 不切词)，超上限等步长抽样（确定性）；判定 = 余弦最近类型原型，且对 negative 原型/次类领先 ≥ margin 才接受；置信度 = `0.5 + 0.5×(sim−accept)/(1−accept)`（单调、可复现）。embedding 命中内部按 置信度↓→短→先 消重叠；与规则结果重叠时**规则优先**（模板精度高），非重叠合并、统一重编 id。
+5. **失败语义**：provider 缺失/抛错/非有限/维度不匹配 → 本次规则回退；连续失败达 `maxProviderFailures`（默认 3）→ 该实例永久回退（记日志）。预算低于 `budgetReserveMs`（默认 300ms）或 signal 中止 → 停止 embed、本次规则回退（不算 provider 失败，下次可续）；embed 与 abort 的 race 保证不悬挂且迟到 rejection 不外溢（D16 同源纪律）。原型构建单飞：并发共享一次尝试，成功缓存、失败/中止后下次重试。
+6. **依赖形态：独立可选子包 `@subconscious/embedding-local`**。core 保持零依赖（R4 0 项）；transformers.js（`@huggingface/transformers`）为该包**可选 peer**（`^3.8.1` + `peerDependenciesMeta.optional`）：npm 默认不安装、lockfile 不受影响、普通 `npm install` 不拉 onnxruntime。包内动态 import + 运行时结构收窄（无静态 import），未安装时类型检查与测试照常通过（模型相关用例 skip，回退路径用例仍跑）。check-deps 增补 R5 锁定该形态与 core 依赖方向。真实模型（Xenova/paraphrase-multilingual-MiniLM-L12-v2 q8，本地 ONNX，`allowRemoteModels=false`）只读本地文件，唯一联网入口是一次性 `npm run fetch:embedding-model`。
+7. **评估协议**：held-out 集 `EMBEDDING_EVAL_SET`（34 例：22 正 + 12 负，中英文、Unicode、监督 holdout 用例含 m3SeparateFromM1）与训练示例的泄漏关系**程序化锁定**（期望指代与训练示例无相等/包含；词级共享是允许的泛化；负例不含正例期望指代）。每条期望标注 `origin: rule|embedding` 且与 RuleDetector 真实行为对照锁定。判定指标唯一事实源 = `evaluateRefDetection`（TP=span 重叠且类型一致；负例预测即 FP）。两个可复现入口：`npm run eval:embedding:fixture`（离线确定性，回归下限 0.85）与 `npm run eval:embedding`（真实模型；缺依赖/模型打印 SKIP 退出 0，不伪造）。
+8. **实测基线**（2026-09-14，默认阈值 accept .65 / margin .1，经真实模型扫描调定；margin>0.1 在该模型上召回大幅受损）：真实模型 P 96.4% / R 90.0% / F1 93.1% / 句子准确率 88.2%；规则基线同集 P 100% / R 50%；规则外子集 recall：合并 80% vs 规则 0%。已知 FP：裸 "that"（"I like that idea"）被判 code-symbol——保留为已知边界并写入报告，不以牺牲 7 个 TP 的 margin 换取单个 FP 消除。
+
+**设计目标保留**：fail-open（任何 embedding 故障 = 规则行为，绝不阻塞 prompt）；core 零宿主零依赖；span/置信度真实一致（引擎 isValidRef 双保险）；测试离线可跑；监督"评估集不只训练例"以程序化检查而非口头承诺落实。
+
+## D20. M4a Claude Code 适配器：协议事实、L0-only 与降级注入
+
+**问题**：Claude Code 的插入点是 `UserPromptSubmit` hook——子进程 stdin/stdout JSON 协议，没有对话式 UI；协议字段、输出形态与阻塞语义必须以官方文档为准核实，交互能力按 DESIGN §7.3/§8.2 降级，且任何故障都不得阻塞用户 prompt。
+
+**协议核实**（官方 hooks reference，https://docs.claude.com/en/docs/claude-code/hooks ，2026-09-14 读取）：hook 经 stdin 收 JSON（`session_id`/`transcript_path`/`cwd`/`permission_mode`/`hook_event_name`/`prompt`）；`UserPromptSubmit` 的 stdout 以 JSON 输出时用 `hookSpecificOutput.hookEventName:"UserPromptSubmit"` + `additionalContext` 追加上下文；`decision:"block"`（输出）与退出码 2 都会阻断并抹除用户 prompt；退出码 0 的 stdout 在 `UserPromptSubmit` 下会被并入上下文（因此日志只能走 stderr）；hook 单命令默认 60s 上限、`timeout` 配置单位为秒；`UserPromptSubmit` 配置不使用 matcher。
+
+**决策**：
+
+1. **数据源只登记 L0**（`CLAUDE_L0_SOURCES` = cwd-context/active-editor/recent-sessions/session-content）。L1 clipboard、L3 image-acquisition 不注册：无确认通道时授权门无法完成，结构性排除比「注册后必然 permission-unsupported」更诚实也更安全（DESIGN §7.3「只服务 L0 数据源 + resolved 态」）。
+2. **降级注入用录制型 unsupported InteractPort**：confirm/select/acquire 一律返回 `"unsupported"`（core 走降级丢弃），但在返回前把引擎试图发起的交互原样录制；适配层把记录转写为 `[潜意识引擎·待确认]` 注入块——select → 候选列表（请模型向用户确认），acquire/confirm → 「需要补充数据/需要用户确认」提示。已解析块（core `[潜意识引擎·已解析]`）在前、待确认块在后，同受 `maxContextChars` 界限。待确认块不冒充解析结论（监督红线：多候选未消歧不注入确定结论）。
+3. **recent-sessions 只用官方字段可核实的部分**：`transcript_path` 指向 `~/.claude/projects/<项目>/<会话>.jsonl`，同目录兄弟 `*.jsonl` 即本项目历史会话；排除当前 `session_id` 对应文件，mtime 降序，元数据只取文件名（稳定 id、标题派生）与 mtime（at）。**transcript JSONL 内部结构无官方文档 → `readSessionContent` 不提供**，历史内容指代诚实 not-found；`~/.claude` 私人会话不得用于开发验证（监督红线）。
+4. **activeEditor/附件诚实缺失**：hooks 协议无编辑器状态（不猜「最近编辑的文件」）；`UserPromptSubmit` 的 `additionalContext` 是纯文本通道，附件出现即丢弃并记 warn，不把 base64 塞文本（D8.4 同源）。
+5. **入口纪律**：cwd 只取 hook 输入的 `cwd` 字段（缺失即 no-op，不回退 process.cwd()）；总超时默认 5000ms（引擎机器预算 3000ms + 余量），`SUBCONSCIOUS_HOOK_TIMEOUT_MS` 可覆盖（正整数、上限 30000，低于宿主 60s）；stdout 只写单行 hook JSON，日志（JSON 行）仅 stderr；退出码恒 0，`uncaughtException`/`unhandledRejection` 兜底后仍退出 0。
+6. **验证形态**：协议测试用真实子进程 spawn `node dist/hook-main.js` 经 stdin/stdout 验证（注入、no-op、非法输入、非本事件、缺 cwd、stdin 悬挂超时、stdout 单行纯净），不用进程内 mock 冒充；check-deps 增补 R6 锁定依赖方向（dependencies 恰为 `@subconscious/core`、无 peerDependencies 面、bin 交付存在）。
+
+## D21. M4b OpenCode 适配器：插入点、会话数据面与类型锁定形态
+
+**问题**：DESIGN §7.4 对 OpenCode 只定了「plugin API 事件总线」与「交互介于 pi 与 Claude Code 之间」，插入点、消息改写方式、会话数据来源、类型依赖形态均须以官方资料核实；监督红线「实际宿主 SDK/协议按官方文档核实」「mock 通过不等于真人宿主端到端通过」。
+
+**协议核实**（官方文档 https://opencode.ai/docs/plugins 2026-09-14 读取 + 锁定版本类型声明 `@opencode-ai/plugin@1.18.30` / `@opencode-ai/sdk@1.18.30`（plugin 的直接依赖）dist/*.d.ts）：
+
+1. 插件形态：模块导出 `Plugin = (input: PluginInput, options?) => Promise<Hooks>`，`PluginInput { client（SDK 客户端）; project; directory; worktree; serverUrl; $ }`；npm 包经 `opencode.json` 的 `"plugin": [...]`、本地文件经 `.opencode/plugins/` / `~/.config/opencode/plugins/` 加载，hooks 顺序执行（文档「Create a plugin」「Load order」节）。
+2. 插入点 = `Hooks["chat.message"]`：`(input { sessionID, agent?, model?, messageID?, variant? }, output { message: UserMessage; parts: Part[] }) => Promise<void>`（类型声明注释 "Called when a new message is received"）。**官方文档事件列表未单独列出该 hook，以锁定版本类型声明为准**（报告与 README 均注明该差异；等价备选 `experimental.chat.messages.transform` 会触及历史消息，纪律禁用）。
+3. 消息改写：output 按引用传入、宿主 await 后持久化同一对象——突变 `parts` 即改写当前用户消息。`UserMessage` 本体无文本字段；`TextPart { type: "text"; text: string; synthetic?; ignored?; … }`，用户话语在非合成 text part。
+4. 会话数据面：`client.session.list({ query?: { directory? } }) → data: Array<Session>`、`session.get({ path: { id } }) → data: Session`（`{ id; directory; title; time: { created; updated } }`）、`session.diff({ path: { id } }) → data: Array<FileDiff>`（`{ file; before; after; additions; deletions }`）；heyapi `RequestResult` 非 200 时 `data` 缺失。
+5. 交互能力：插件无可调用的 confirm / select / input / 文件选取对话框（TUI 客户端有 toast 与内置对话框，非插件对话通道；`permission.ask` 只服务工具授权）→ **降级矩阵同 Claude Code**（D20.2 复用：录制型 unsupported InteractPort + `[潜意识引擎·待确认]` 注入块）。
+
+**决策**：
+
+1. **只改当前用户消息**：注入 append-only 追加到 `output.parts` 第一个非合成 text part 尾部（原文逐字节前缀保持）；不 push 新 part（自造 id/sessionID 的 part 不在官方契约内）、不动其他 part 与历史消息。
+2. **数据源只登记 L0**（同 D20.1：无确认通道，L1 clipboard / L3 image-acquisition 结构性排除）。
+3. **HostEnv**：cwd 只取 `PluginInput.directory`（官方字段，缺失 no-op，不回退 process.cwd()）；`activeEditor`/`readClipboardText` 结构性缺失；recent-sessions = `session.list`（query.directory 过滤本项目、排除当前 sessionID、time.updated 降序、无效时间排后、标题/条数截断）；session-content = `session.get`+`session.diff`（FileDiff → edit 语义 SessionChange，at 取会话 time.updated，缺失 → 空串不猜）；cwd-context 同 adapter-claude 纪律（有界 readdir + 可注入 git exec）。**会话数据全走官方 SDK 客户端，不直读 `~/.local/share/opencode` 存储**——官方 API 的字段与语义可核实，直读内部存储结构不可核实（对齐 D20.3 的「只用官方字段可核实部分」精神，且此处无需降级：session.diff 即历史修改记录）。
+4. **依赖形态**：运行时仅 `@subconscious/core`；`@opencode-ai/plugin` 为 **optional peer（`^1.18.30`）+ devDependencies 精确锁定 `1.18.30`**，代码仅 type-only import，编译产物零宿主引用（typecheck 即协议形状证据；宿主内该包必有，普通消费者可不装）。check-deps 增补 **R7** 锁定：dependencies 恰 core / peer 显式且 optional / dev 精确且满足 peer / `exports["./plugin"]` 指向 dist。
+5. **超时与 fail-open**：`chat.message` 是进程内 await——引擎机器预算 3s（D3）+ 适配器总超时 race 5s（`SUBCONSCIOUS_OPENCODE_TIMEOUT_MS` 可覆盖，上限 30000，同 D20.5 语义），任何异常/超时表现为「没生效」；日志走 stderr JSON 行。
+6. **验证形态**：离线测试用 heyapi 形状假客户端（list/get/diff 记录调用与参数）驱动真实 core 引擎全链路（注入 / no-op / 待确认降级 / fail-open / 总超时 / cwd 缺失 / 无 text 通道），`SubconsciousPlugin` 经官方 `Plugin` 类型检查即接线证据；**无真实 OpenCode 宿主 E2E**（监督约束禁改全局宿主配置），报告区分 mock 与真实宿主。
+
+## D22. 硬化轮：适配器 embedding opt-in 接线、入口副作用修复与独立消费者 smoke
+
+**问题**：M3 交付了 embedding 检测器但未接线到任何适配器（M3 验收遗留项）；接线必须满足：默认行为逐字节不变、可选依赖缺失不崩、测试离线（fixture 注入而非真实模型）、core 零依赖与适配器依赖方向（R6/R7「dependencies 恰 core」）不被破坏。同时监督要求把 tarball 独立消费者 smoke 从 M1 的一次性手工验证固化为可重跑脚本，并覆盖新包。
+
+**决策**：
+
+1. **opt-in 语义与依赖形态**：环境变量 `SUBCONSCIOUS_EMBEDDING`（仅 `1`/`true` 生效，其余任何值含未设置为关）。三个适配器各自内置 `src/embedding-optin.ts`：opt-in 时动态 `import("@subconscious/embedding-local")`（specifier 显式注解为 `string` 阻止 TS 解析，同 D19.6 的 TRANSFORMERS_MODULE 手法）+ 运行时结构收窄（`createLocalEmbeddingDetector` 形状），调用其 `createLocalEmbeddingDetector({modelDir?, logger?})` 包规则检测器。**适配器清单不出现该包**（check-deps 新增 R8 锁定 dependencies/peerDependencies 均不得含它）——三份实现刻意不抽公共包（任何共享都会引入新的包依赖面，违反 R6/R7）。
+2. **失败语义（fail-open 两层）**：模块不可用（未安装/形状不符/构造抛错）→ 适配器层记 **stderr 单行 JSON warn**（`embedding-optin-unavailable`）后返回 undefined（引擎不传 detector，core 默认规则检测器，行为与接线前逐字节一致）；模块可用但模型/依赖缺失 → embedding-local 层回退（D19.5 已有），同步/异步路径均为规则输出。冷加载（import + ONNX 加载）超过 `EMBEDDING_LOAD_TIMEOUT_MS`（2000ms）→ 本次规则回退（`embedding-load-timeout`），后台加载继续。
+3. **memoize 单例与生命周期**：resolver 按 modelDir 分键 memoize「永不 reject 的加载 promise」；模块级单例使长寿命进程（pi 扩展、OpenCode 插件）内模型至多加载一次。引擎实例仍按事件重建（D11 不变——detector 是模型权重，不是宿主绑定状态）。一次性进程（Claude hook）每次冷加载计入总超时预算，README 建议调高 `SUBCONSCIOUS_HOOK_TIMEOUT_MS`。
+4. **`SUBCONSCIOUS_EMBEDDING_MODEL_DIR` 透传**：embedding-local 的 npm tarball 不含模型文件（`files: ["dist"]`），真实消费者必须能指向自己的模型目录；缺省仍是包内 `models/`（仓库内 `npm run fetch:embedding-model` 预下载）。
+5. **入口副作用修复（smoke 首次发现的缺陷）**：adapter-claude 的 "." 入口曾 re-export 自 `hook-main.js`（可执行入口，导入即副作用：注册全局 uncaughtException/unhandledRejection 处理器 + 排干 stdin）——库式导入会阻塞至 stdin 预算耗尽（默认 5s）并**吞掉消费者进程自己的未捕获异常**（退出码被改写为 0，smoke 因此假绿过一次）。修复：超时配置抽到零副作用的 `src/timeout.ts`，index/hook-main 均从其取值；回归测试 `test/index-entry.proc.test.ts` 以真实子进程锁定（父进程保持子进程 stdin 打开，导入 "." 后必须 2s 内完成且 stderr 干净）。
+6. **独立消费者 smoke（`scripts/pack-smoke.mjs`，`npm run smoke:pack`）**：core/adapter-claude/adapter-opencode/embedding-local 四包 `npm pack` → 全新临时目录单次 `npm install` 四个 tarball（互相满足 `@subconscious/core@^0.1.0` 依赖）→ consumer 脚本断言：core 引擎构造 + 无指代 no-op；claude 库式入口真实注入 + bin `dist/hook-main.js` 在包内；opencode 未装 peer 时 "." 与 "./plugin" 均可导入且可真实注入（type-only import 编译期擦除证据）；embedding-local 缺依赖/模型 → `createLocalEmbeddingDetector` 规则等价 fail-open。**离线自证**：registry 指向 `http://127.0.0.1:9/`，任何意外联网解析立即失败。adapter-pi 不在范围：其 peer 非可选，离线安装必然触及 registry（M1 已有一次性手工验证，pi 的加载证据走仓库内真实 SessionManager fixture 测试）。CI 增补 `npm run smoke:pack` 步骤。
+7. **测试纪律**：三适配器的 opt-in 测试（各 14 例）全部离线——loader 注入 2 轴向量 fixture provider + 2 条自定义示例，规则外表述「咱们那个摊子」作行为锚点（规则检测器零命中，opt-in 后端到端解析注入；未 opt-in 同句零注入即默认不变的端到端证据）；「模块缺失」用抛错 loader 模拟 ERR_MODULE_NOT_FOUND。真实 transformers 路径归 embedding-local 包评估（`eval:embedding`），不在适配器测试内触碰。
+
+**设计目标保留**：默认行为零变化（未 opt-in 不 import、不计时、引擎不传 detector）；fail-open 覆盖到「适配器自己依赖缺失」这一新故障面；core 零依赖；测试离线；mock 与真实宿主的边界在 README/报告中显式区分。

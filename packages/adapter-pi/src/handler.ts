@@ -28,6 +28,8 @@ import { createPiHostEnv } from "./host-env.js";
 import type { ListSessionsFn, PiExec, PiHostContext } from "./host-env.js";
 import { createPiInteract } from "./interact.js";
 import type { PiUiContext } from "./interact.js";
+import { embeddingDetectorResolver } from "./embedding-optin.js";
+import type { EmbeddingDetectorResolver } from "./embedding-optin.js";
 
 /**
  * 本 handler 依赖的事件/上下文子面。真实 BeforeAgentStartEvent 与 ExtensionContext
@@ -52,6 +54,8 @@ export interface AdapterDeps {
   listSessions?: ListSessionsFn;
   /** 引擎工厂；缺省 core createEngine（异常注入测试用） */
   createEngineFn?: (options: EngineOptions) => SubconsciousEngine;
+  /** embedding 检测器 resolver；缺省模块级单例（SUBCONSCIOUS_EMBEDDING opt-in） */
+  embeddingResolver?: EmbeddingDetectorResolver;
 }
 
 export interface HandlerOptions {
@@ -105,9 +109,13 @@ export function createBeforeAgentStartHandler(options: HandlerOptions = {}): Bef
         ...(deps.listSessions !== undefined ? { listSessions: deps.listSessions } : {}),
         ...(options.activeEditor !== undefined ? { activeEditor: options.activeEditor } : {}),
       });
+      // embedding opt-in（SUBCONSCIOUS_EMBEDDING=1）：未 opt-in 时 resolve 立即 undefined，
+      // 引擎不传 detector，行为与接线前逐字节一致；不可用/超时同样回退规则（fail-open）
+      const detector = await (deps.embeddingResolver ?? embeddingDetectorResolver).resolve({ logger: options.logger });
       const engineOptions: EngineOptions = {
         sources: DEFAULT_SOURCES,
         interact: createPiInteract(ctx),
+        ...(detector !== undefined ? { detector } : {}),
         ...(options.limits !== undefined ? { limits: options.limits } : {}),
         ...(options.logger !== undefined ? { logger: options.logger } : {}),
       };

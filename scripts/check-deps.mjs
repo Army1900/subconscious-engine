@@ -2,7 +2,7 @@
 /**
  * 依赖契约检查（M1 交付 3）。
  *
- * 规则（监督定界，见 .supervision/task-08.txt 目标 3）：
+ * 规则（监督定界，见 .supervision/task-08.txt 目标 3；R5 为 M3 增补）：
  * - R1 adapter-pi 的 peerDependencies["@earendil-works/pi-coding-agent"] 必须存在，
  *      且为显式 semver 范围（X.Y.Z / ^X.Y.Z / ~X.Y.Z；禁止 *、latest、空串、别名）；
  * - R2 adapter-pi 的 devDependencies["@earendil-works/pi-coding-agent"] 必须为精确版本
@@ -10,6 +10,35 @@
  * - R3 R2 的精确版本必须满足 R1 的 peer 范围（caret/tilde/exact 子集语义自实现）；
  * - R4 core 的 dependencies 每一项必须是显式 semver，禁止 *（core 零宿主依赖红线，
  *      一旦未来引入依赖也只允许显式 semver）。
+ * - R5 embedding-local（M3 可选向量包）：
+ *      a) peerDependencies["@huggingface/transformers"] 必须存在且为显式 semver；
+ *      b) peerDependenciesMeta 必须将其标记为 optional（npm 默认不安装，
+ *         未安装用户构建/测试不得失败——fail-open 依赖形态的清单面契约）；
+ *      c) core 的 dependencies 不得出现任何 @subconscious/* 包（依赖方向红线：
+ *         core 不依赖 adapter / 可选功能包）。
+ * - R6 adapter-claude（M4a Claude Code hooks 适配器）：
+ *      a) dependencies 恰为 {"@subconscious/core": 显式 semver}——hooks 是协议级
+ *         集成，不得引入任何宿主 SDK 运行时依赖；
+ *      b) 不得声明 peerDependencies（无宿主包依赖面）；
+ *      c) bin["subconscious-claude-hook"] 必须存在且指向 dist（交付物是可执行
+ *         hook）。包清单缺失时跳过（--root 夹具根允许旧布局）。
+ * - R7 adapter-opencode（M4b OpenCode plugin 适配器）：
+ *      a) dependencies 恰为 {"@subconscious/core": 显式 semver}——运行时零宿主
+ *         依赖（@opencode-ai/plugin 只允许 type-only import，编译后产物零引用）；
+ *      b) peerDependencies["@opencode-ai/plugin"] 必须存在且为显式 semver，且
+ *         peerDependenciesMeta 标记 optional（类型包在 OpenCode 宿主内必有、
+ *         普通消费者可不装——fail-open 依赖形态的清单面契约，同 R5 形态）；
+ *      c) devDependencies["@opencode-ai/plugin"] 必须为精确版本（类型来源锁定
+ *         已发布版本，同 R2 纪律）；
+ *      d) c 的精确版本必须满足 b 的 peer 范围（同 R3 语义）；
+ *      e) exports["./plugin"] 必须存在且 default 指向 dist/（交付物是插件入口
+ *         子导出）。包清单缺失时跳过（--root 夹具根允许旧布局）。
+ * - R8 适配器 embedding opt-in 形态（硬化轮）：
+ *      adapter-pi / adapter-claude / adapter-opencode 的 dependencies 与
+ *      peerDependencies 均不得出现 @subconscious/embedding-local——opt-in 只允许
+ *      动态 import（运行时结构收窄 + 缺包诚实回退规则检测器），适配器清单
+ *      不得因此引入可选功能包依赖（claude/opencode 的「dependencies 恰 core」
+ *      由 R6/R7 锁定，本规则补齐 pi 并显式禁止 peer 面扩张）。清单缺失时跳过。
  *
  * 实现说明：不引入 semver 依赖（工程脚本同样遵循零额外依赖）；允许的语法子集即
  * M1 策略本身，超集（|| 并集、复合比较范围、dist-tag）一律按「非显式 semver」拒绝。
@@ -22,6 +51,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+const EMBEDDING_LOCAL_PACKAGE = "@subconscious/embedding-local";
 const DEFAULT_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
 
 // ---------------------------------------------------------------------------
@@ -87,6 +117,19 @@ function checkDependencyContract(root) {
 
   const adapter = readManifest(root, "packages/adapter-pi/package.json");
   const core = readManifest(root, "packages/core/package.json");
+  const embeddingLocal = readManifest(root, "packages/embedding-local/package.json");
+  let adapterClaude = null;
+  try {
+    adapterClaude = readManifest(root, "packages/adapter-claude/package.json").pkg;
+  } catch {
+    adapterClaude = null; // 夹具根允许不含该包（R6 为 M4a 增补）
+  }
+  let adapterOpencode = null;
+  try {
+    adapterOpencode = readManifest(root, "packages/adapter-opencode/package.json").pkg;
+  } catch {
+    adapterOpencode = null; // 夹具根允许不含该包（R7 为 M4b 增补）
+  }
 
   // R1：peer 范围显式存在
   const peerRange = adapter.pkg.peerDependencies?.[PI_PACKAGE];
@@ -132,6 +175,182 @@ function checkDependencyContract(root) {
   } else {
     for (const [name, spec] of bad) {
       results.push({ rule: "R4", ok: false, message: `core dependencies ${name}="${spec}" 不是显式 semver（禁止 * / latest / 空串 / 别名）` });
+    }
+  }
+
+  // R5：embedding-local 的可选向量依赖形态 + core 依赖方向（M3）
+  const EMBEDDING_DEP = "@huggingface/transformers";
+  const localPeer = embeddingLocal.pkg.peerDependencies?.[EMBEDDING_DEP];
+  if (localPeer === undefined) {
+    results.push({ rule: "R5", ok: false, message: `embedding-local peerDependencies 缺少 ${EMBEDDING_DEP}` });
+  } else if (!isExplicitSemver(localPeer)) {
+    results.push({ rule: "R5", ok: false, message: `peer ${EMBEDDING_DEP}="${localPeer}" 不是显式 semver` });
+  } else {
+    const optionalMeta = embeddingLocal.pkg.peerDependenciesMeta?.[EMBEDDING_DEP]?.optional === true;
+    if (!optionalMeta) {
+      results.push({ rule: "R5", ok: false, message: `peerDependenciesMeta.${EMBEDDING_DEP}.optional 必须为 true（可选依赖，npm 默认不安装）` });
+    } else {
+      results.push({ rule: "R5", ok: true, message: `embedding-local peer ${EMBEDDING_DEP}="${localPeer}" 显式 semver 且 optional` });
+    }
+  }
+  const coreInternalDeps = Object.keys(coreDeps).filter((name) => name.startsWith("@subconscious/"));
+  if (coreInternalDeps.length === 0) {
+    results.push({ rule: "R5", ok: true, message: "core 不依赖任何 @subconscious/* 包（依赖方向红线）" });
+  } else {
+    for (const name of coreInternalDeps) {
+      results.push({ rule: "R5", ok: false, message: `core dependencies 出现 ${name}：core 不得依赖 adapter / 可选功能包` });
+    }
+  }
+
+  // R6：adapter-claude 依赖方向与交付形态（M4a）
+  const CORE_PACKAGE = "@subconscious/core";
+  if (adapterClaude === null) {
+    results.push({ rule: "R6", ok: true, message: "adapter-claude 清单不存在，跳过（夹具根旧布局）" });
+  } else {
+    const claudeDeps = adapterClaude.dependencies ?? {};
+    const claudeDepNames = Object.keys(claudeDeps);
+    const wrongDeps = claudeDepNames.filter((name) => name !== CORE_PACKAGE || !isExplicitSemver(claudeDeps[name]));
+    const onlyCore =
+      claudeDepNames.length === 1 &&
+      claudeDepNames[0] === CORE_PACKAGE &&
+      isExplicitSemver(claudeDeps[CORE_PACKAGE]);
+    if (claudeDepNames.length === 0 || wrongDeps.length > 0 || !onlyCore) {
+      for (const name of wrongDeps) {
+        results.push({
+          rule: "R6",
+          ok: false,
+          message: `adapter-claude dependencies ${name}="${claudeDeps[name]}" 非法（只允许 ${CORE_PACKAGE} 且须显式 semver）`,
+        });
+      }
+      if (wrongDeps.length === 0) {
+        results.push({
+          rule: "R6",
+          ok: false,
+          message: `adapter-claude dependencies 必须恰为 {"${CORE_PACKAGE}": 显式 semver}（实际 ${JSON.stringify(claudeDeps)}）`,
+        });
+      }
+    } else {
+      results.push({
+        rule: "R6",
+        ok: true,
+        message: `adapter-claude dependencies 恰为 ${CORE_PACKAGE}="${claudeDeps[CORE_PACKAGE]}"（协议级集成，无宿主 SDK 运行时依赖）`,
+      });
+    }
+    const peerCount = Object.keys(adapterClaude.peerDependencies ?? {}).length;
+    if (peerCount === 0) {
+      results.push({ rule: "R6", ok: true, message: "adapter-claude 无 peerDependencies（无宿主包依赖面）" });
+    } else {
+      results.push({ rule: "R6", ok: false, message: `adapter-claude 声明了 ${peerCount} 项 peerDependencies（hooks 协议级集成不应有宿主包依赖面）` });
+    }
+    const bin = adapterClaude.bin?.["subconscious-claude-hook"];
+    const binNormalized = typeof bin === "string" ? bin.replace(/^\.\//, "") : bin;
+    if (typeof binNormalized === "string" && binNormalized.startsWith("dist/")) {
+      results.push({ rule: "R6", ok: true, message: `bin subconscious-claude-hook → ${bin}` });
+    } else {
+      results.push({ rule: "R6", ok: false, message: `bin subconscious-claude-hook 缺失或未指向 dist（实际 ${JSON.stringify(bin)}）` });
+    }
+  }
+
+  // R7：adapter-opencode 依赖方向、类型锁定与交付形态（M4b）
+  const OPENCODE_PLUGIN = "@opencode-ai/plugin";
+  if (adapterOpencode === null) {
+    results.push({ rule: "R7", ok: true, message: "adapter-opencode 清单不存在，跳过（夹具根旧布局）" });
+  } else {
+    const ocDeps = adapterOpencode.dependencies ?? {};
+    const ocDepNames = Object.keys(ocDeps);
+    const ocWrongDeps = ocDepNames.filter((name) => name !== CORE_PACKAGE || !isExplicitSemver(ocDeps[name]));
+    const ocOnlyCore =
+      ocDepNames.length === 1 && ocDepNames[0] === CORE_PACKAGE && isExplicitSemver(ocDeps[CORE_PACKAGE]);
+    if (ocOnlyCore) {
+      results.push({
+        rule: "R7",
+        ok: true,
+        message: `adapter-opencode dependencies 恰为 ${CORE_PACKAGE}="${ocDeps[CORE_PACKAGE]}"（运行时零宿主依赖）`,
+      });
+    } else {
+      for (const name of ocWrongDeps) {
+        results.push({
+          rule: "R7",
+          ok: false,
+          message: `adapter-opencode dependencies ${name}="${ocDeps[name]}" 非法（只允许 ${CORE_PACKAGE} 且须显式 semver）`,
+        });
+      }
+      if (ocWrongDeps.length === 0) {
+        results.push({
+          rule: "R7",
+          ok: false,
+          message: `adapter-opencode dependencies 必须恰为 {"${CORE_PACKAGE}": 显式 semver}（实际 ${JSON.stringify(ocDeps)}）`,
+        });
+      }
+    }
+    const ocPeer = adapterOpencode.peerDependencies?.[OPENCODE_PLUGIN];
+    const ocPeerOptional = adapterOpencode.peerDependenciesMeta?.[OPENCODE_PLUGIN]?.optional === true;
+    if (typeof ocPeer === "string" && isExplicitSemver(ocPeer)) {
+      if (ocPeerOptional) {
+        results.push({ rule: "R7", ok: true, message: `peer ${OPENCODE_PLUGIN}="${ocPeer}" 显式 semver 且 optional` });
+      } else {
+        results.push({ rule: "R7", ok: false, message: `peerDependenciesMeta.${OPENCODE_PLUGIN}.optional 必须为 true（类型包可选，普通消费者可不装）` });
+      }
+    } else {
+      results.push({
+        rule: "R7",
+        ok: false,
+        message: `peer ${OPENCODE_PLUGIN}="${String(ocPeer)}" 缺失或不是显式 semver（类型来源须有可核实的 peer 范围）`,
+      });
+    }
+    const ocDev = adapterOpencode.devDependencies?.[OPENCODE_PLUGIN];
+    if (typeof ocDev === "string" && isExactSemver(ocDev)) {
+      results.push({ rule: "R7", ok: true, message: `devDependencies ${OPENCODE_PLUGIN}="${ocDev}" 为精确版本（类型锁定）` });
+      if (typeof ocPeer === "string" && isExplicitSemver(ocPeer)) {
+        if (satisfies(ocDev, ocPeer)) {
+          results.push({ rule: "R7", ok: true, message: `${ocDev} 满足 peer 范围 ${ocPeer}` });
+        } else {
+          results.push({ rule: "R7", ok: false, message: `${ocDev} 不满足 peer 范围 ${ocPeer}` });
+        }
+      }
+    } else {
+      results.push({
+        rule: "R7",
+        ok: false,
+        message: `devDependencies ${OPENCODE_PLUGIN}="${String(ocDev)}" 不是精确版本（需裸 X.Y.Z，同 R2 纪律）`,
+      });
+    }
+    const pluginExport = adapterOpencode.exports?.["./plugin"];
+    const pluginDefault = typeof pluginExport === "object" && pluginExport !== null ? pluginExport.default : pluginExport;
+    const pluginNormalized = typeof pluginDefault === "string" ? pluginDefault.replace(/^\.\//, "") : pluginDefault;
+    if (typeof pluginNormalized === "string" && pluginNormalized.startsWith("dist/")) {
+      results.push({ rule: "R7", ok: true, message: `exports["./plugin"] → ${pluginDefault}` });
+    } else {
+      results.push({
+        rule: "R7",
+        ok: false,
+        message: `exports["./plugin"] 缺失或 default 未指向 dist（实际 ${JSON.stringify(pluginExport)}）`,
+      });
+    }
+  }
+
+  // R8：适配器 embedding opt-in 只允许动态 import 形态（硬化轮）
+  const adapterManifests = [
+    ["adapter-pi", adapter.pkg],
+    ["adapter-claude", adapterClaude],
+    ["adapter-opencode", adapterOpencode],
+  ];
+  for (const [name, manifest] of adapterManifests) {
+    if (manifest === null) {
+      results.push({ rule: "R8", ok: true, message: `${name} 清单不存在，跳过（夹具根旧布局）` });
+      continue;
+    }
+    const pkg = manifest;
+    const inDeps = Object.prototype.hasOwnProperty.call(pkg.dependencies ?? {}, EMBEDDING_LOCAL_PACKAGE);
+    const inPeers = Object.prototype.hasOwnProperty.call(pkg.peerDependencies ?? {}, EMBEDDING_LOCAL_PACKAGE);
+    if (inDeps || inPeers) {
+      results.push({
+        rule: "R8",
+        ok: false,
+        message: `${name} ${inDeps ? "dependencies" : "peerDependencies"} 出现 ${EMBEDDING_LOCAL_PACKAGE}：embedding opt-in 只允许动态 import（缺包诚实回退规则），适配器清单不得引入可选功能包依赖`,
+      });
+    } else {
+      results.push({ rule: "R8", ok: true, message: `${name} 未声明 ${EMBEDDING_LOCAL_PACKAGE}（opt-in 保持动态 import 形态）` });
     }
   }
 

@@ -3,6 +3,9 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/adapter-pi" },
-    { "path": "packages/demo" }
+    { "path": "packages/adapter-claude" },
+    { "path": "packages/adapter-opencode" },
+    { "path": "packages/demo" },
+    { "path": "packages/embedding-local" }
   ]
 }

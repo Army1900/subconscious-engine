@@ -2,3 +2,4 @@ node_modules/
 dist/
 coverage/
 .supervision/
+packages/embedding-local/models/

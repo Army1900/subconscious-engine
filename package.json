@@ -17,7 +17,11 @@
     "test": "npm run build && npm run test --workspaces --if-present",
     "check": "npm run typecheck && npm run test",
     "check-deps": "node scripts/check-deps.mjs",
-    "demo": "npm run build && npm run demo --workspace @subconscious/demo"
+    "smoke:pack": "npm run build && node scripts/pack-smoke.mjs",
+    "demo": "npm run build && npm run demo --workspace @subconscious/demo",
+    "fetch:embedding-model": "node packages/embedding-local/scripts/fetch-model.mjs",
+    "eval:embedding": "npm run build && node packages/embedding-local/scripts/eval-embedding.mjs --provider transformers",
+    "eval:embedding:fixture": "npm run build && node packages/embedding-local/scripts/eval-embedding.mjs --provider fixture"
   },
   "devDependencies": {
     "typescript": "^5.9.2",

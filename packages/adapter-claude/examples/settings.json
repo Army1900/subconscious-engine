@@ -1,0 +1,16 @@
+{
+  "$comment": "Claude Code UserPromptSubmit hook 安装片段（项目级 .claude/settings.json；不要放全局 ~/.claude）。UserPromptSubmit 不使用 matcher；timeout 单位秒。官方协议：https://docs.claude.com/en/docs/claude-code/hooks",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/packages/adapter-claude/dist/hook-main.js",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -50,6 +50,24 @@ export interface Detector {
   detect(prompt: string): readonly DanglingRef[];
 }
 
+/**
+ * 异步检测上下文（M3）：异步检测器与引擎共享同一机器预算（D3 单时钟纪律）。
+ * remainingMs 为检测可用的剩余机器预算；signal 中止后不得再发起 embed。
+ */
+export interface DetectorContext {
+  signal: AbortSignal;
+  remainingMs(): number;
+}
+
+/**
+ * 异步增强检测器（M3 embedding）：在同步 Detector 之上提供共享预算的异步检测路径。
+ * 契约：同步 detect() 必须始终可用且永不抛出——它是异步路径一切失败（provider 缺失/
+ * 加载失败/维度不匹配/预算耗尽/中止）的回退（fail-open，DESIGN §5.3）。
+ */
+export interface AsyncDetector extends Detector {
+  detectAsync(prompt: string, ctx?: DetectorContext): Promise<readonly DanglingRef[]>;
+}
+
 // ---------------------------------------------------------------------------
 // 解析结果四态（DESIGN §4.3）
 // ---------------------------------------------------------------------------

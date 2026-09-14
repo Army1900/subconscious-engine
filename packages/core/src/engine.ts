@@ -1,5 +1,5 @@
 import { assemble, type DroppedItem, type ResolvedItem } from "./assembler.js";
-import { createRuleDetector } from "./detector.js";
+import { createRuleDetector, isAsyncDetector } from "./detector.js";
 import { createDeadlineClock, type DeadlineClock } from "./clock.js";
 import { EngineConfigError, errorMessage } from "./errors.js";
 import { guardInteract, UNSUPPORTED_INTERACT, type GuardedInteract } from "./interact.js";
@@ -254,13 +254,36 @@ async function runEnrich(prompt: string, env: HostEnv, run: RunContext): Promise
   }
 
   // --- 检测（异常吞掉 → no-op）---
-  let detected: readonly DanglingRef[] = [];
-  try {
-    const result = run.detector.detect(prompt);
-    if (Array.isArray(result)) detected = result;
-  } catch (err) {
-    logger({ level: "warn", event: "detector-error", detail: errorMessage(err) });
-    return { resolvedRefs: [], droppedRefs: [], dropReasons: {} };
+  // M3：异步增强检测器（AsyncDetector）的 detectAsync 在机器预算内运行，检测与解析共享
+  // 同一时钟（D3 单预算纪律，检测耗时不给解析翻新预算）；任何失败/超时回退其同步
+  // detect()（EmbeddingDetector 的同步契约即规则结果），fail-open 不变。
+  let detected: readonly DanglingRef[] | null = null;
+  let pendingClock: DeadlineClock | null = null;
+  const asyncDetector = isAsyncDetector(run.detector) ? run.detector : null;
+  if (asyncDetector !== null) {
+    const detClock = createDeadlineClock(limits.timeoutMs, run.timer);
+    pendingClock = detClock;
+    try {
+      const outcome = await withDeadline(
+        Promise.resolve().then(() =>
+          asyncDetector.detectAsync(prompt, { signal: detClock.signal, remainingMs: () => detClock.remainingMs() }),
+        ),
+        detClock.signal,
+      );
+      detected = outcome === DEADLINE ? null : outcome;
+    } catch (err) {
+      logger({ level: "warn", event: "detector-async-error", detail: errorMessage(err) });
+      detected = null;
+    }
+    if (detected === null) detected = safeDetectRefs(asyncDetector, prompt, logger); // 回退同步契约
+  } else {
+    try {
+      const result = run.detector.detect(prompt);
+      detected = Array.isArray(result) ? result : [];
+    } catch (err) {
+      logger({ level: "warn", event: "detector-error", detail: errorMessage(err) });
+      return { resolvedRefs: [], droppedRefs: [], dropReasons: {} };
+    }
   }
 
   // --- 引擎统一重编 id（防自定义检测器 id 缺失/重复），并强制 span 与原文一致 ---
@@ -282,9 +305,12 @@ async function runEnrich(prompt: string, env: HostEnv, run: RunContext): Promise
   }
 
   // 无指代 → no-op 透传：零数据源 / 零授权 / 零交互调用（监督红线）
-  if (active.length === 0) return assemble([], dropped, { limits, logger });
+  if (active.length === 0) {
+    pendingClock?.dispose(); // 异步路径已建的时钟同样清理（句柄纪律）
+    return assemble([], dropped, { limits, logger });
+  }
 
-  const clock = createDeadlineClock(limits.timeoutMs, run.timer);
+  const clock = pendingClock ?? createDeadlineClock(limits.timeoutMs, run.timer);
   try {
     const interact = guardInteract(run.interactPort, {
       signal: clock.signal,
@@ -348,6 +374,17 @@ async function runEnrich(prompt: string, env: HostEnv, run: RunContext): Promise
   } finally {
     // enrich 返回前统一 abort：关闭仍在等待的交互；之后迟到回调只能看到已中止信号（D3.3）
     clock.dispose();
+  }
+}
+
+/** 异步检测失败后的同步回退（AsyncDetector 契约：detect 恒可用）；再失败按零指代处理 */
+function safeDetectRefs(detector: Detector, prompt: string, logger: Logger): readonly DanglingRef[] {
+  try {
+    const result = detector.detect(prompt);
+    return Array.isArray(result) ? result : [];
+  } catch (err) {
+    logger({ level: "warn", event: "detector-fallback-error", detail: errorMessage(err) });
+    return [];
   }
 }
 

@@ -1,4 +1,4 @@
-import type { DanglingRef, DataType, Detector } from "./types.js";
+import type { AsyncDetector, DanglingRef, DataType, Detector } from "./types.js";
 
 /**
  * 规则版指代检测器（M1；DESIGN §4.1）。
@@ -128,4 +128,12 @@ export class RuleDetector implements Detector {
 
 export function createRuleDetector(): RuleDetector {
   return new RuleDetector();
+}
+
+/**
+ * 结构探测：是否为异步增强检测器（M3，AsyncDetector）。
+ * 引擎据此选择共享机器预算的异步检测路径；仅同步 Detector 时走原路径，行为与 M1 一致。
+ */
+export function isAsyncDetector(detector: Detector): detector is AsyncDetector {
+  return typeof (detector as Partial<AsyncDetector>).detectAsync === "function";
 }

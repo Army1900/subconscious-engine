@@ -4,7 +4,8 @@ export type EngineErrorCode =
   | "unknown-type"
   | "invalid-source"
   | "invalid-permission"
-  | "invalid-limits";
+  | "invalid-limits"
+  | "invalid-detector-options";
 
 export class EngineConfigError extends Error {
   readonly code: EngineErrorCode;

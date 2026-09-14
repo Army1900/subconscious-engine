@@ -27,3 +27,9 @@
 ## 状态
 - M1 已独立验收：全仓类型检查、192 个测试、依赖契约、离线真实 SessionManager/adapter 演示、包 tarball 独立消费者导入均通过。M1 仍无真人 pi E2E，README 已明确该限制。
 - M2 正在拆分为持久 grants/clipboard 与 pi acquisition 两个小任务；D17 记录了 scope 和隐私边界。
+- 2026-09-14 监督者（ZCode）接手：M2 代码与测试已在仓（grants/clipboard/acquisition/parallel/holdout 测试文件齐备，npm run check 与 check-deps 全绿），README 已声明 M2 能力；按已实现验收。M3 已派单给 Claude CLI（embedding 检测器 + 评估集 + 规则回退），随后 M4（Claude hooks / OpenCode）与硬化。
+- 2026-09-14 M3 已独立验收：npm run check 全绿（core 186 / pi 47 / demo 1 / embedding-local 8+1 skip）、check-deps R1–R5 通过、离线 fixture 评估 P/R=96.7%、评估泄漏由程序化用例锁定、回退路径（provider 缺失/中止/超预算→规则）代码审查确认。真实模型评估 P96.4/R90.0（实现者自报，模型为本机缓存）。遗留：裸 "that" 单例 FP、首次 enrich 原型构建可能回退、pi 适配器未接线 embedding（归入硬化任务）。
+- 2026-09-14 M4a（adapter-claude）已独立验收：npm run check 全绿（282 通过）、check-deps R1–R6 通过、监督者亲测真实子进程协议（stdin hook JSON → stdout 单行合法 hook JSON，含 additionalContext）。无真人 Claude Code E2E（约束禁止改全局宿主配置），README 已区分。遗留：会话内容因 transcript 结构无官方文档而诚实 not-found；embedding 未接线（归硬化）。
+- 2026-09-14 M4b（adapter-opencode）已独立验收：npm run check 全绿（317 通过，opencode 38）、check-deps R1–R7 通过、监督者亲测 dist 零 @opencode-ai 运行时引用、dist/plugin.js 真实加载导出。插入点 chat.message 以锁定版本 @opencode-ai/plugin@1.18.30 类型声明核实（官方文档未列该 hook，差异已记 D21）；无真人 OpenCode E2E，README 已区分。中途一次 429 限额中断后由监督者检查半成品并重新派单续做。
+- 2026-09-14 硬化轮已派单（适配器可选接线 embedding、tarball 消费者 smoke 扩展、README/DECISIONS 收尾），验收后由监督者统一提交。
+- 2026-09-14 硬化轮已独立验收并整体收口：npm run check 360 通过、check-deps R1–R8 全绿、demo 通过、smoke:pack 四包独立消费者断言通过。该轮另发现并修复 adapter-claude "." 入口副作用缺陷（re-export 自可执行入口，回归测试以真实子进程锁定）。M1–M4+硬化全部 accepted；遗留（裸 "that" FP、opt-in 真实模型冷加载未实测、真人宿主 E2E 未做）已在 README/DECISIONS 如实记录。

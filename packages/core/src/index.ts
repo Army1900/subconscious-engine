@@ -12,12 +12,14 @@
 export type {
   AcquisitionSpec,
   ActiveEditorState,
+  AsyncDetector,
   Candidate,
   CwdSnapshot,
   DanglingRef,
   DataSource,
   DataType,
   Detector,
+  DetectorContext,
   DropReason,
   EngineLimits,
   EngineOptions,
@@ -49,7 +51,7 @@ export type {
 
 export { DEFAULT_ENGINE_LIMITS } from "./types.js";
 
-export { RuleDetector, createRuleDetector } from "./detector.js";
+export { RuleDetector, createRuleDetector, isAsyncDetector } from "./detector.js";
 export { DataSourceRegistry, isDataType } from "./registry.js";
 export { InMemoryGrantStore } from "./grants.js";
 export { FileGrantStore } from "./file-grants.js";
@@ -73,5 +75,22 @@ export {
 } from "./sources/index.js";
 
 export { assemble } from "./assembler.js";
+export {
+  cosineSimilarity,
+  createEmbeddingDetector,
+  DEFAULT_EMBEDDING_THRESHOLDS,
+  EmbeddingDetector,
+} from "./embedding.js";
+export type {
+  EmbeddingDetectorOptions,
+  EmbeddingExample,
+  EmbeddingExampleLabel,
+  EmbeddingProvider,
+  EmbeddingThresholds,
+  EmbeddingVector,
+} from "./embedding.js";
+export { DEFAULT_EMBEDDING_EXAMPLES, EMBEDDING_EXAMPLES_VERSION } from "./embedding-examples.js";
+export { EMBEDDING_EVAL_SET, embeddingEvalLeakErrors, evaluateRefDetection } from "./embedding-eval.js";
+export type { EmbeddingEvalCase, EmbeddingEvalRef, RefDetectionMetrics } from "./embedding-eval.js";
 export type { AssembleOptions, DroppedItem, ResolvedItem } from "./assembler.js";
 export { isNonEmptyString, truncate, uniquifyLabels } from "./text.js";
