@@ -50,6 +50,7 @@ import { createRecordingUnsupportedInteract } from "./interact.js";
 import type { InteractionRecord } from "./interact.js";
 import { embeddingDetectorResolver } from "./embedding-optin.js";
 import type { EmbeddingDetectorResolver } from "./embedding-optin.js";
+import { wireMemory } from "./memory.js";
 
 /** 本适配器登记的 L0 数据源（无确认通道，L1 clipboard / L3 image-acquisition 不注册） */
 export const OPENCODE_L0_SOURCES: readonly DataSource[] = [
@@ -138,6 +139,8 @@ export interface PluginHandlerOptions {
     createEngineFn?: (options: EngineOptions) => SubconsciousEngine;
     /** embedding 检测器 resolver；缺省模块级单例（SUBCONSCIOUS_EMBEDDING opt-in） */
     embeddingResolver?: EmbeddingDetectorResolver;
+    /** env 快照；缺省 process.env（记忆路径 SUBCONSCIOUS_MEMORY_FILE 等测试注入用） */
+    env?: NodeJS.ProcessEnv;
   };
 }
 
@@ -225,11 +228,16 @@ export async function handleChatMessage(
     const createEngineFn = options.deps?.createEngineFn ?? createEngine;
     // embedding opt-in（SUBCONSCIOUS_EMBEDDING=1）：未 opt-in 时 resolve 立即 undefined，
     // 引擎不传 detector，行为与接线前逐字节一致；不可用/超时同样回退规则（fail-open）
-    const detector = await (options.deps?.embeddingResolver ?? embeddingDetectorResolver).resolve({ logger });
+    const embeddingDetector = await (options.deps?.embeddingResolver ?? embeddingDetectorResolver).resolve({ logger });
+    // 记忆接线（M5b，D24）：每条消息重读词典（D11 → 手工编辑热生效）并组合检测器；
+    // store 恒传入（本宿主 select 不可用故不学习，但共享先验可自动代选）；记忆任何
+    // 故障 fail-open 为无记忆，绝不阻塞宿主消息流
+    const memory = await wireMemory(embeddingDetector, { env: options.deps?.env, logger });
     const engine = createEngineFn({
       sources: options.sources ?? OPENCODE_L0_SOURCES,
       interact,
-      ...(detector !== undefined ? { detector } : {}),
+      memory: memory.store,
+      ...(memory.detector !== undefined ? { detector: memory.detector } : {}),
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       ...(logger !== undefined ? { logger } : {}),
     });

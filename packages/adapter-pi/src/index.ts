@@ -49,6 +49,8 @@ export {
   MODEL_DIR_ENV_VAR,
 } from "./embedding-optin.js";
 export type { EmbeddingDetectorResolver, EmbeddingLoadOptions } from "./embedding-optin.js";
+export { MEMORY_FILE_ENV_VAR, resolveMemoryFilePath, wireMemory } from "./memory.js";
+export type { MemoryWireOptions, MemoryWiring } from "./memory.js";
 export {
   MAX_CHANGES_PER_SESSION,
   parseSessionJsonl,

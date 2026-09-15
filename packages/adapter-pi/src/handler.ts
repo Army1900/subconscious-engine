@@ -30,6 +30,7 @@ import { createPiInteract } from "./interact.js";
 import type { PiUiContext } from "./interact.js";
 import { embeddingDetectorResolver } from "./embedding-optin.js";
 import type { EmbeddingDetectorResolver } from "./embedding-optin.js";
+import { wireMemory } from "./memory.js";
 
 /**
  * 本 handler 依赖的事件/上下文子面。真实 BeforeAgentStartEvent 与 ExtensionContext
@@ -56,6 +57,8 @@ export interface AdapterDeps {
   createEngineFn?: (options: EngineOptions) => SubconsciousEngine;
   /** embedding 检测器 resolver；缺省模块级单例（SUBCONSCIOUS_EMBEDDING opt-in） */
   embeddingResolver?: EmbeddingDetectorResolver;
+  /** env 快照；缺省 process.env（记忆路径 SUBCONSCIOUS_MEMORY_FILE 等测试注入用） */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface HandlerOptions {
@@ -111,11 +114,17 @@ export function createBeforeAgentStartHandler(options: HandlerOptions = {}): Bef
       });
       // embedding opt-in（SUBCONSCIOUS_EMBEDDING=1）：未 opt-in 时 resolve 立即 undefined，
       // 引擎不传 detector，行为与接线前逐字节一致；不可用/超时同样回退规则（fail-open）
-      const detector = await (deps.embeddingResolver ?? embeddingDetectorResolver).resolve({ logger: options.logger });
+      const embeddingDetector = await (deps.embeddingResolver ?? embeddingDetectorResolver).resolve({
+        logger: options.logger,
+      });
+      // 记忆接线（M5b，D24）：每事件读取词典（D11 → 手工编辑热生效）并组合检测器；
+      // store 恒传入（先验加权/代选 + select 亲选学习），记忆任何故障 fail-open 为无记忆
+      const memory = await wireMemory(embeddingDetector, { env: deps.env, logger: options.logger });
       const engineOptions: EngineOptions = {
         sources: DEFAULT_SOURCES,
         interact: createPiInteract(ctx),
-        ...(detector !== undefined ? { detector } : {}),
+        memory: memory.store,
+        ...(memory.detector !== undefined ? { detector: memory.detector } : {}),
         ...(options.limits !== undefined ? { limits: options.limits } : {}),
         ...(options.logger !== undefined ? { logger: options.logger } : {}),
       };
