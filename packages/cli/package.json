@@ -1,0 +1,34 @@
+{
+  "name": "@subconscious/cli",
+  "version": "0.1.0",
+  "description": "subconscious 独立安装器 CLI：源码安装一步到位（install / doctor / update / uninstall），接线宿主显式指定，零运行时依赖。",
+  "type": "module",
+  "bin": {
+    "subconscious": "./dist/main.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "npm run build && vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

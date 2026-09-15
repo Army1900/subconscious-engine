@@ -80,6 +80,31 @@
 - `npm run demo`：离线端到端演示（真实 SessionManager fixture + 真实 adapter handler 代码路径）。
 - CI（`.github/workflows/ci.yml`）依次运行以上四项。
 
+## 安装（独立安装器 CLI）
+
+`@subconscious/cli`（bin：`subconscious`，零运行时依赖，只需 Node ≥22）把本仓库源码安装为**用户级全局接线**，独立于任何宿主产品（如 hi-agi）——安装器只读写你自己的家目录（`~/.subconscious-engine/` 源码树与安装记录、三宿主的全局接线点），本仓库不因此新增任何对外耦合。接线宿主必须显式指定：
+
+```sh
+# 从官方仓库安装并接线全部三宿主
+subconscious install --hosts pi,claude,opencode
+
+# 开发者 link 模式：不 clone、原地构建、接线指向你的工作副本
+subconscious install --hosts pi --source /path/to/subconscious-engine
+
+# 只看将执行的每一步（含配置 diff 预览），零写入
+subconscious install --hosts pi,claude,opencode --dry-run
+```
+
+- **install**：预检（Node ≥22、npm、git）→ `git clone --depth 1` 到 `~/.subconscious-engine/src`（link 模式原地）→ `npm ci`（无 lock 则 `npm install`）→ `npm run build` → 逐宿主接线 → 写 `install.json`。`--hosts` 必填（缺省会列出可用宿主与各自 CLI 是否在 PATH，提示不阻塞）；已有安装会提示改用 `update`。
+- **接线点（均幂等，重复执行不重复接线）**：pi = `~/.pi/agent/extensions/subconscious/`（dist 全量重拷，一致 = 条数 + 逐文件字节数）；claude = `~/.claude/settings.json` 追加 `UserPromptSubmit`（timeout 10）与 `SessionEnd`（timeout 60）两条 hook——写前逐字节备份到 `~/.subconscious-engine/backups/`，只追加不改其余内容，读失败/损坏即中止绝不盲写；opencode = `~/.config/opencode/plugins/subconscious.js`（整文件 re-export）。
+- **doctor**：逐项检查安装记录、构建产物、三宿主接线一致性、宿主 CLI 在 PATH，任一失败退出码 1；可 `--hosts` 过滤。
+- **update**：`git pull --ff-only`（分叉即失败并提示）→ 重建 → 重接线 → 更新 `install.json` 的 rev/updatedAt。
+- **uninstall**：`--hosts` 缺省拆全部；只拆自己的产物（claude 只删本安装的 hook，其余条目原样保留）；全部拆完且 `--purge-source` 才删 `~/.subconscious-engine/` 整目录；用户数据区 `~/.subconscious/`（memory/grants）默认绝不碰，`--purge-data --yes` 才会删且删前打印路径。
+
+与各适配器 README「安装」节的项目级指导（`.claude/settings.json` + `$CLAUDE_PROJECT_DIR` 等）的关系：README 面向把仓库放进项目的开发者；安装器是用户级全局的产品化路径（显式 opt-in + 备份 + 幂等 + 可卸载），二者共存（宿主会合并用户级与项目级配置），决策记录见 `docs/DECISIONS.md` D27。
+
+**安装后冒烟**：先用无指代语句（如「hello」「列出当前目录」）验证行为与裸宿主一致——无法解析时本引擎原样透传、绝不影响宿主；再用「分析这个项目的结构」验证注入生效。
+
 ## 本地验证
 
 需要 Node.js 22 或更新版本：

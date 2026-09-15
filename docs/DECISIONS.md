@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 1.9（M5c-2：新增 D26 适配器惯例蒸馏接线——三宿主事件/执行面核实与选择） |
+| 文档版本 | 2.0（安装器轮：新增 D27 独立安装器 CLI——源码安装/诊断/更新/卸载与用户级全局接线纪律） |
 | 关联 | [DESIGN.md](../DESIGN.md)、[SUPERVISION.md](SUPERVISION.md)、[CONVENTIONS.md](CONVENTIONS.md) |
 
 ---
@@ -368,3 +368,19 @@ DESIGN.md §10 里程碑表（M3 含"多指代并行解析"）与 SUPERVISION.md
 - **测试形态（全离线）**：宿主 CLI 一律**假可执行文件**（shell 脚本回放固定 JSON）或注入的假执行器/假 SDK 客户端——绝不真调宿主 CLI；hook/child 用真实编译产物子进程（claude：spawn `dist/hook-main.js` 经 stdin/stdout；pi：真实 `dist/distill-child.js` + detached 触发路径 + 轮询写回断言）。真人端到端蒸馏未做（监督约束禁触真实宿主/会话），README 与报告如实区分。pi 的 test 脚本改为先 build（蒸馏子进程需编译产物，与 claude/opencode 同形）。
 
 **设计目标保留**：core 零依赖零 LLM（蒸馏只发生在宿主事件、由宿主模型执行，适配器只做确定性校验与写回）；fail-open 覆盖蒸馏全链路；不预测注入红线不因蒸馏改变（惯例只在既有内容指代被检出后参与解析）；透明性（memory.json 人可读、display 出处、grants 可撤销、临时会话/临时文件标题与权限可辨识）；check / check-deps 全绿，无新增运行时依赖（R4/R6/R7/R8 不变）。
+
+## D27. 独立安装器 CLI（@subconscious/cli）：源码安装一步到位与用户级全局接线纪律
+
+**问题**（安装器任务书，2026-09-15）：本仓库需要独立于任何宿主产品（如 hi-agi）的安装能力，先做源码安装。用户三决策：① 安装命令独立成 CLI 且接线宿主必须显式指定（`--hosts` 必填）；② 默认安装根 `~/.subconscious-engine/`；③ 一步到位——install / doctor / update / uninstall 全量交付。三宿主接线目标形态经各适配器 README 与 `.supervision/` 锁定文档核实（pi 扩展目录、claude 官方 matcher-group 样例、opencode 全局插件路径）。
+
+**决策**：
+
+1. **形态**：`packages/cli`（`@subconscious/cli`，bin `subconscious`）**零运行时依赖**（纯 node:fs/path/child_process），不依赖 `@subconscious/core`——安装器材料化与接线的是源码树，不是运行时 API；零依赖使它可在任何 Node ≥22 环境单独运行，仓库不因此新增任何对外耦合（check-deps R1–R8 不受影响）。
+2. **install 语义**：预检（node ≥22、npm 在场、git 模式还需 git）→ 材料化源码（git URL → `git clone --depth 1` 到 `~/.subconscious-engine/src`；本地绝对路径 → link 模式：不 clone、原地构建、接线指向该路径）→ `npm ci`（无 lock 则 `npm install`）→ `npm run build` → 逐宿主接线 → 写 `install.json`（source / sourcePath / rev（git rev-parse HEAD，非 git 源为空串）/ hosts / installedAt）。已有 install.json 拒绝并提示 `update`；src 目录存在但无标记拒绝（防覆盖来路不明内容）；`--dry-run` 打印每步（含配置 diff 预览）零写入；部分宿主接线失败时安装记录只登记成功者并退出 1。宿主 CLI 不在 PATH 仅为提示（不阻塞安装）。
+3. **接线与幂等判据**：pi = `~/.pi/agent/extensions/subconscious/` ← `packages/adapter-pi/dist/*` 全量重拷（先清空旧目录；一致 = 条数 + 逐文件字节数）；claude = `~/.claude/settings.json` 的 `UserPromptSubmit`（timeout 10）/ `SessionEnd`（timeout 60）各追加一条**官方 matcher-group 形态**条目（任务书表格中的扁平 JSON 即其内层 command 条目；识别「已装」兼容两种写法——command 含本安装 hook-main.js 绝对路径即跳过）；opencode = `~/.config/opencode/plugins/subconscious.js` 整文件覆写为一行 re-export（指向别处则 uninstall 不删）。
+4. **claude 写入纪律（硬性）**：读失败 / JSON 解析失败 / 形状异常 → 中止该宿主接线，原文件字节不动，绝不盲写；写前把原文件逐字节备份到 `~/.subconscious-engine/backups/claude-settings-<时间戳>.json`（仅本次调用首个写动作一次，原文件不存在则无备份）；合并只追加本安装条目，其余键与条目原样保留；原子写（同目录临时文件 + rename）+ 2 空格缩进；uninstall 只删本安装条目，事件数组清空删键、hooks 对象清空删 hooks 键。
+5. **状态与卸载分层**：`install.json` 是 update / uninstall / doctor 的事实源（形状校验，非法即报不可用，不带半份记录继续）。uninstall `--hosts` 缺省 = 记录的全部宿主；全部拆完且 `--purge-source` 才删整个 `~/.subconscious-engine/`（部分拆线时只更新记录并警告）；用户数据区 `~/.subconscious/`（memory/grants）默认绝不碰，`--purge-data` 需 `--yes` 且拒绝发生在任何动作之前、删前打印路径。update = `git pull --ff-only`（clone 模式在安装根/src、link 模式在 sourcePath；分叉/失败即中止且不触碰接线）→ 重建 → 重接线 → 只更新 rev/updatedAt（installedAt 不变）。
+6. **与 adapter README 项目级指导的关系**：各适配器 README「安装」节面向把仓库放进项目的开发者（项目级 `.claude/settings.json` + `$CLAUDE_PROJECT_DIR` 等）；安装器是**用户级全局接线**的产品化路径——显式 opt-in（`--hosts` 必填）+ 备份 + 幂等 + 可卸载。二者共存（宿主合并用户级与项目级配置，hooks 顺序执行），不是替代关系。
+7. **可测性与验证边界**：全部路径经 `process.env.HOME` 每次现算（不缓存，测试临时 HOME 驱动全链）；npm/git 经可注入执行器；单测用假源树（`packages/*/dist` 桩文件）覆盖安装逻辑，**不跑真实 `npm ci && npm run build`**（真实构建链路属真机验收）；bin 入口有真实子进程测试（argv 分发 / 退出码）。doctor 的宿主 CLI PATH 检查计入失败（任一 ✗ exit 1）——与 install 的「提示不阻塞」分工：install 关心能否装上，doctor 关心为何不生效。
+
+**设计目标保留**：宿主配置安全（备份 / 原子写 / 只动自己的条目 / 绝不盲写）是第一优先级；安装器不适 fail-open——安装是显式变更，任何失败明确报告并退出 1（重复安装拒绝而非静默幂等越过用户）；仓库零新增对外耦合；core 与适配器代码零改动。
