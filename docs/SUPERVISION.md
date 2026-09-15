@@ -25,6 +25,7 @@
 - 10小时内持续安排有价值的实现/审核，不通过空转、重复无变化测试伪造持续工作。
 
 ## 状态
+- 2026-09-15 M5c-1（core 惯例层）+ M5c-2（三适配器蒸馏接线）已独立验收：监督者裁定 D25 六决策点（D-A①/D-B 评估进 .supervision/D-C②L1/D-D①+③/D-E 并入 v2/D-F 候选列表）。M5c-1 验收脚本（.supervision/m5c1-accept.mjs）验证 L1 授权门/授权持久化/多惯例候选不静默/ghost 跨项目/否定语跳过/90 天读侧过滤/无惯例回退/M5a 回归；验收中监督者补"照旧"规则模式（惯例招牌短语原为已知 FN）并迁移评估 origin。M5c-2 闭环经真实 claude hook 二进制亲测：SessionEnd→mock 蒸馏器→惯例落盘 v2→防递归哨兵→SUBCONSCIOUS_DISTILL=0 零写入；**验收发现并修复隐私缺陷**——core L1 确认文案内嵌惯例全文，无通道宿主转播 prompt 即未授权外发，改为只点名惯例名并加红线测试（sealed 亲测）。全仓测试全绿（pi 94/claude 82/opencode 93/core 294/demo 1/embedding-local 9+1skip）、check-deps、smoke:pack 通过。M5 三层记忆（先验/词典/惯例蒸馏）全部交付。
 - M1 已独立验收：全仓类型检查、192 个测试、依赖契约、离线真实 SessionManager/adapter 演示、包 tarball 独立消费者导入均通过。M1 仍无真人 pi E2E，README 已明确该限制。
 - M2 正在拆分为持久 grants/clipboard 与 pi acquisition 两个小任务；D17 记录了 scope 和隐私边界。
 - 2026-09-14 监督者（ZCode）接手：M2 代码与测试已在仓（grants/clipboard/acquisition/parallel/holdout 测试文件齐备，npm run check 与 check-deps 全绿），README 已声明 M2 能力；按已实现验收。M3 已派单给 Claude CLI（embedding 检测器 + 评估集 + 规则回退），随后 M4（Claude hooks / OpenCode）与硬化。
