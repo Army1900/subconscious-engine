@@ -3,7 +3,10 @@
 状态：**已裁定（DECISIONS D25，2026-09-15）并落地 core（M5c-1）**：schema v2 +
 存储（isConvention/parse/addConvention/listConventions/recordConventionHit，写时淘汰）
 + 引擎解析接入（锚定/优先序/L1 授权/否定语跳过/命中回写）+ 红线测试全部交付；
-六决策点（D-A..D-F）裁定见 D25。**适配器蒸馏接线（§3/§4）归 M5c-2，未交付**。
+六决策点（D-A..D-F）裁定见 D25。**适配器蒸馏接线（§3/§4）已交付（M5c-2，
+DECISIONS D26）**：pi `session_shutdown` / Claude Code `SessionEnd` / OpenCode
+`session.idle` → 宿主 LLM headless 总结 → 适配器校验（§4）→ addConvention 写回，
+三宿主事件/执行面核实证据与选择见 D26。
 本文其余部分保留为设计依据原文。前置：DECISIONS D23（内容指代规则化/embedding）、
 D24（个人记忆层 v0）；红线：DESIGN §11.3（不做预测注入）、§5.3（fail-open）、
 core 零 LLM。

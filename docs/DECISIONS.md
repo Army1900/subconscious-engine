@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 1.8（M5c-1：新增 D25 项目惯例层 core——schema v2 + 解析接入） |
+| 文档版本 | 1.9（M5c-2：新增 D26 适配器惯例蒸馏接线——三宿主事件/执行面核实与选择） |
 | 关联 | [DESIGN.md](../DESIGN.md)、[SUPERVISION.md](SUPERVISION.md)、[CONVENTIONS.md](CONVENTIONS.md) |
 
 ---
@@ -342,3 +342,29 @@ DESIGN.md §10 里程碑表（M3 含"多指代并行解析"）与 SUPERVISION.md
 **范围与遗留**：本轮只交付 core（types/memory/conventions/engine + 45 个新测试用例，全离线）；适配器蒸馏接线（session_shutdown/SessionEnd/session.idle → headless 蒸馏 → 校验 → addConvention）归 **M5c-2**。既有适配器传入的 memory store 即刻获得惯例解析能力（引擎侧行为），但蒸馏无入口，惯例只能手工编辑 memory.json 产生。core 零依赖不变（R4），无需新增 R 规则（check-deps 全绿）。
 
 **设计目标保留**：不预测注入（惯例只在既有内容指代被检出后参与解析；无指代零开销透传不因记忆改变）；fail-open（记忆读取/回写任何故障 = 回退既有路径或尽力而为）；透明性（display 出处 + 来源标注 + grants 可查可撤销）；封闭类型集不变；core 零依赖零 LLM（蒸馏在宿主，core 只存取与确定性解析）。
+
+## D26. M5c-2 适配器惯例蒸馏接线：三宿主事件/执行面核实证据与选择
+
+**问题**（M5c-2 任务书，2026-09-15）：三个适配器需在会话结束事件触发惯例蒸馏（宿主 LLM headless 总结 → 适配器校验 → addConvention 写回），core 零 LLM 红线不破。三宿主的结束事件名/载荷与 LLM 调用面须按锁定版类型声明与官方文档核实，不得虚构接口。
+
+**三宿主蒸馏执行面核实记录（2026-09-15）**：
+
+1. **pi（事件 + headless 形态均由锁定版核实）**：
+   - `session_shutdown`：`@earendil-works/pi-coding-agent@0.85.1` `dist/core/extensions/types.d.ts:474-479`（`SessionShutdownEvent { type; reason: "quit"|"reload"|"new"|"resume"|"fork"; targetSessionFile? }`）与 `:916`（`on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>)`，返回 void）；`.supervision/pi-extensions.md`（锁定文档快照）§session_shutdown 确认 new/resume/fork 属会话替换流、reload 属扩展运行时重载。会话素材通道：`ReadonlySessionManager` 的 `getSessionFile/getSessionDir/getSessionId/getSessionName`（session-manager.d.ts:140,205-230）。
+   - headless 形态：根 README 已在本机 pi 0.85.1 验证的 `pi --offline --no-session --no-extensions --no-skills --no-tools -p`。
+   - **选择**：reason=reload **跳过**（重载时会话仍在继续，蒸馏会冻结半途素材且去抖挡掉结束时更完整的蒸馏）；quit/new/resume/fork 触发。执行 = **detached `node dist/distill-child.js` 监工子进程**（fire-and-forget，不阻塞会话结束；quit 后靠 detached 存活完成「headless pi → 校验 → 写回」，素材经 0600 临时文件传递、读完即删）——纯 detached spawn 不带监工则 quit 后无人消费子进程 stdout，写回结构性丢失。
+2. **Claude Code（事件面经官方文档镜像/社区实现核实；通用 stdin 协议 D20 已核实）**：SessionEnd 经 stdin 收通用字段（session_id/transcript_path/cwd/permission_mode/hook_event_name）+ 事件特有 `reason`（clear/logout/prompt_input_exit 等）；无 prompt 字段；stdout 无上下文通道。官方 docs 域名在本环境被代理拦截，改经官方文档索引与社区协议参考交叉核实（[hooks reference](https://code.claude.com/docs/en/hooks)、[hooks guide（SessionEnd matcher on reason）](https://code.claude.com/docs/en/hooks-guide)），与 D20 已核实的通用字段面一致。
+   - **选择**：**复用同一 bin**（`hook-main` 双事件分派，不新增 bin）；SessionEnd 无 stdout 输出、日志 stderr、退出码 0。执行 = hook 进程内 spawn headless **`claude -p`** 并等待（默认 50s < 宿主 hook 默认 60s，免配置；hook 进程即「会话结束后」的一次性进程，等待是完成写回的唯一途径）。**防递归哨兵** `SUBCONSCIOUS_DISTILL_CHILD=1`：蒸馏子进程内触发的任何 hook（UserPromptSubmit 注入污染素材 / SessionEnd 再蒸馏）在入口顶部拦截为 no-op。素材 = transcript_path JSONL **尾部 64KB 原文拼接**（内部结构无官方文档 → 不解析字段，近似素材，README/根 README 注明；newline 对齐 + fatal UTF-8）；`basedOnSessionTitle` 置空（无官方标题通道，不虚构，display 回退会话 id）。
+3. **OpenCode（事件 + client 侧 LLM 调用面均由锁定版类型声明核实）**：
+   - `session.idle`：`@opencode-ai/sdk@1.18.30` `dist/gen/types.gen.d.ts:413-417`（`EventSessionIdle = { type: "session.idle"; properties: { sessionID: string } }`）；经 `@opencode-ai/plugin@1.18.30` `Hooks["event"]: (input: { event: Event }) => Promise<void>`（plugin dist/index.d.ts:175-178）投递。OpenCode 无「会话销毁」事件，session.idle 每轮回复完成后触发。
+   - **client 侧 LLM 调用面存在且公开**：`client.session.prompt`（POST /session/{id}/message，"Create and send a new message to a session"，sdk.gen.d.ts:170-174；body `{ parts: TextPartInput[]; system?; tools?: Record<string, boolean> }`，响应 `{ info: AssistantMessage; parts: Part[] }` 即助手回复，types.gen.d.ts:2244-2287）+ `session.create`（:114 / types.gen.d.ts:1811）/ `session.delete`（:122）支撑临时会话生命周期。**据此不采用备选的 spawn `opencode run` 子进程**。
+   - **选择**：蒸馏在**临时会话**内进行（create → prompt(`tools:{}` 结构性禁用工具 + 系统提示约束 JSON) → delete），绝不污染用户会话；临时会话登记进**进程内注册表**，本插件对其 chat.message/session.idle 一律跳过（防自触发：蒸馏回复的 idle 不再触发蒸馏）。素材 = `session.get`（标题）+ `session.diff`（FileDiff），全走官方 SDK（D21.3 纪律）。**去抖为冷却窗口（默认 30 分钟）而非每会话一次**：session.idle 每轮触发，每会话一次会把素材冻结在首轮；冷却窗口允许长会话阶段性重蒸馏（upsert 相同内容 no-op），成本约束在每会话每窗口至多一次——这是对任务书「同会话重复结束事件只蒸馏一次」在 OpenCode 事件语义下的忠实适配（pi/claude 仍是严格一次）。
+
+**共同纪律（三适配器各自内置 distill 模块，刻意不抽公共包——R6/R7 依赖方向）**：
+
+- **校验面（CONVENTIONS §4，不信模型输出）**：JSON 解析失败 → 放弃本次（围栏剥离 + 首 `[` 末 `]` 切片的确定性二次机会）；逐条形状校验（复用 core `isConvention`：expression ≤16 字 / content ≤120 字）→ 非法丢弃；超 5 条截断；敏感内容粗筛（私钥块 / sk-、gh 系列、xox 系列、AKIA 前缀 / Bearer 令牌 / 40+ 连续无分隔随机串）命中丢弃该条并记 warn；与现有条目逐字节相同丢弃（防「洗时间」；core upsert 亦 no-op，双保险）。
+- **开关/超时/注入面**：`SUBCONSCIOUS_DISTILL=0` 关闭（其余任何值含未设置 = 开）；`SUBCONSCIOUS_DISTILL_TIMEOUT_MS`（pi/opencode 默认 60s、claude 50s，上限 300s）；pi/claude 的 headless 命令经 `SUBCONSCIOUS_DISTILL_BIN` 覆盖（测试注入面）。蒸馏**写入**不需授权；**注入**的 L1-grant-once 已由 core（M5c-1）处理——pi 传真实 `ctx.ui` confirm、claude/opencode 录制型 unsupported 降级「待确认」块，本轮零新代码（core conventions-engine.test 的 L1 四路径 + 降级路径测试锁定）。
+- **fail-open**：任何失败（素材读取 / spawn / 超时 / 输出非法 / 写回）= stderr 单行 warn 后静默跳过，宿主会话/退出流程零影响；不做网络重试。opencode 的蒸馏在后台 promise 内（event hook 立即返回）；claude 在 hook 进程内等待（有界）；pi 完全进程外。
+- **测试形态（全离线）**：宿主 CLI 一律**假可执行文件**（shell 脚本回放固定 JSON）或注入的假执行器/假 SDK 客户端——绝不真调宿主 CLI；hook/child 用真实编译产物子进程（claude：spawn `dist/hook-main.js` 经 stdin/stdout；pi：真实 `dist/distill-child.js` + detached 触发路径 + 轮询写回断言）。真人端到端蒸馏未做（监督约束禁触真实宿主/会话），README 与报告如实区分。pi 的 test 脚本改为先 build（蒸馏子进程需编译产物，与 claude/opencode 同形）。
+
+**设计目标保留**：core 零依赖零 LLM（蒸馏只发生在宿主事件、由宿主模型执行，适配器只做确定性校验与写回）；fail-open 覆盖蒸馏全链路；不预测注入红线不因蒸馏改变（惯例只在既有内容指代被检出后参与解析）；透明性（memory.json 人可读、display 出处、grants 可撤销、临时会话/临时文件标题与权限可辨识）；check / check-deps 全绿，无新增运行时依赖（R4/R6/R7/R8 不变）。

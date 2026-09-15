@@ -10,6 +10,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBeforeAgentStartHandler } from "./handler.js";
+import { createSessionShutdownHandler } from "./shutdown.js";
 
 export default function subconsciousExtension(pi: ExtensionAPI): void {
   pi.on(
@@ -20,6 +21,9 @@ export default function subconsciousExtension(pi: ExtensionAPI): void {
       // 注意：不传 activeEditor——pi 无编辑器概念，D6 红线：无当前编辑器不猜文件。
     }),
   );
+  // 惯例蒸馏（M5c-2）：会话结束（quit/new/resume/fork；reload 跳过）触发
+  // fire-and-forget 蒸馏子进程（SUBCONSCIOUS_DISTILL=0 关闭；详见 distill.ts）
+  pi.on("session_shutdown", createSessionShutdownHandler());
 }
 
 export { createBeforeAgentStartHandler, toEventResult } from "./handler.js";
@@ -52,8 +56,52 @@ export type { EmbeddingDetectorResolver, EmbeddingLoadOptions } from "./embeddin
 export { MEMORY_FILE_ENV_VAR, resolveMemoryFilePath, wireMemory } from "./memory.js";
 export type { MemoryWireOptions, MemoryWiring } from "./memory.js";
 export {
+  composeDistillPrompt,
+  createDistillDebouncer,
+  DEFAULT_DISTILL_TIMEOUT_MS,
+  DISTILL_BIN_ENV_VAR,
+  DISTILL_ENV_VAR,
+  DISTILL_MATERIAL_MAX_BYTES,
+  DISTILL_MATERIAL_MAX_CHARS,
+  DISTILL_TIMEOUT_ENV_VAR,
+  extractDistillCandidates,
+  headlessPiArgs,
+  isDistillEnabled,
+  looksSensitive,
+  MAX_DISTILL_CONVENTIONS,
+  MAX_DISTILL_DEBOUNCE_ENTRIES,
+  MAX_DISTILL_TIMEOUT_MS,
+  renderSessionMaterial,
+  resolveDistillTimeoutMs,
+  runDistillation,
+  spawnHeadlessPi,
+  buildConventionEntries,
+} from "./distill.js";
+export type {
+  ConventionBase,
+  DistilledCandidate,
+  DistillDebouncer,
+  DistillExecutor,
+  DistillPromptInput,
+  DistillRequest,
+  DistillRunOptions,
+  SessionMaterialInput,
+} from "./distill.js";
+export {
+  createSessionShutdownHandler,
+  readTailText,
+  triggerSessionDistillation,
+} from "./shutdown.js";
+export type {
+  PiSessionShutdownEvent,
+  PiShutdownContext,
+  SessionShutdownHandler,
+  ShutdownHandlerOptions,
+} from "./shutdown.js";
+export {
   MAX_CHANGES_PER_SESSION,
   parseSessionJsonl,
+  parseUserTurns,
   readSessionChanges,
   resolveContainedPath,
 } from "./session-jsonl.js";

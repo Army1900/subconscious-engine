@@ -105,6 +105,43 @@ export interface ParsedSession {
   headerId: string | undefined;
 }
 
+/**
+ * 提取用户话语（M5c-2 惯例蒸馏素材）：message 条目里 role=user 的文本内容，
+ * 每条消息的文本块按出现顺序拼接为一条话语（素材组装侧再做条数/字符上限）。
+ * 与 parseSessionJsonl 同源的逐行解析纪律：坏行跳过、不猜形状（content 兼容
+ * 字符串与块数组两种官方形态，非文本块忽略）。
+ */
+export function parseUserTurns(text: string): string[] {
+  const turns: string[] = [];
+  const lines = text.split("\n");
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // 坏行跳过（与 parseSessionJsonl 同纪律）
+    }
+    if (!isRecord(entry) || entry.type !== "message") continue;
+    const message = entry.message;
+    if (!isRecord(message) || message.role !== "user") continue;
+    const content = message.content;
+    if (typeof content === "string") {
+      if (content.trim() !== "") turns.push(content);
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    const texts: string[] = [];
+    for (const block of content) {
+      if (!isRecord(block) || block.type !== "text") continue;
+      if (typeof block.text === "string" && block.text.trim() !== "") texts.push(block.text);
+    }
+    if (texts.length > 0) turns.push(texts.join("\n"));
+  }
+  return turns;
+}
+
 /** 逐行解析已解码的 JSONL 文本：message 条目里 assistant 的 edit/write toolCall 展开，toolResult 标记 isError */
 export function parseSessionJsonl(text: string): ParsedSession {
   const pending = new Map<string, PendingCall>();

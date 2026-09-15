@@ -64,6 +64,14 @@ function storeFor(filePath: string): FileMemoryStore {
 }
 
 /**
+ * 同路径 memoized store 的公开访问（M5c-2 蒸馏写回与引擎接线共享同一实例，
+ * 进程内写队列串行化——先验读取与惯例写回不会交错写坏文件）。
+ */
+export function fileMemoryStoreFor(filePath: string): FileMemoryStore {
+  return storeFor(filePath);
+}
+
+/**
  * 引擎构造前的记忆接线：读取词典并组合检测器 + 提供记忆 store。永不抛出、永不
  * reject（fail-open：任何记忆故障 = 无记忆，prompt 照常发出）。
  */

@@ -1,5 +1,5 @@
 {
-  "$comment": "Claude Code UserPromptSubmit hook 安装片段（项目级 .claude/settings.json；不要放全局 ~/.claude）。UserPromptSubmit 不使用 matcher；timeout 单位秒。官方协议：https://docs.claude.com/en/docs/claude-code/hooks",
+  "$comment": "Claude Code hooks 安装片段（项目级 .claude/settings.json；不要放全局 ~/.claude）。UserPromptSubmit 不使用 matcher；timeout 单位秒。SessionEnd 复用同一 bin 承接 M5c-2 惯例蒸馏（默认蒸馏超时 50s，故 timeout 给 60）。官方协议：https://docs.claude.com/en/docs/claude-code/hooks",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -8,6 +8,17 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/packages/adapter-claude/dist/hook-main.js",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/packages/adapter-claude/dist/hook-main.js",
+            "timeout": 60
           }
         ]
       }

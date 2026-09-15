@@ -37,5 +37,42 @@ export {
   MODEL_DIR_ENV_VAR,
 } from "./embedding-optin.js";
 export type { EmbeddingDetectorResolver, EmbeddingLoadOptions } from "./embedding-optin.js";
-export { MEMORY_FILE_ENV_VAR, resolveMemoryFilePath, wireMemory } from "./memory.js";
+export { MEMORY_FILE_ENV_VAR, fileMemoryStoreFor, resolveMemoryFilePath, wireMemory } from "./memory.js";
 export type { MemoryWireOptions, MemoryWiring } from "./memory.js";
+export { parseSessionEndInput } from "./input.js";
+export type { ClaudeSessionEndInput } from "./input.js";
+export {
+  composeDistillPrompt,
+  createDistillDebouncer,
+  DEFAULT_DISTILL_TIMEOUT_MS,
+  DISTILL_BIN_ENV_VAR,
+  DISTILL_CHILD_GUARD_ENV_VAR,
+  DISTILL_ENV_VAR,
+  DISTILL_MATERIAL_MAX_BYTES,
+  DISTILL_MATERIAL_MAX_CHARS,
+  DISTILL_TIMEOUT_ENV_VAR,
+  extractDistillCandidates,
+  isDistillChildGuard,
+  isDistillEnabled,
+  looksSensitive,
+  MAX_DISTILL_CONVENTIONS,
+  MAX_DISTILL_DEBOUNCE_ENTRIES,
+  MAX_DISTILL_TIMEOUT_MS,
+  readTailText,
+  renderTranscriptMaterial,
+  resolveDistillTimeoutMs,
+  runDistillation,
+  spawnHeadlessClaude,
+  buildConventionEntries,
+} from "./distill.js";
+export type {
+  ConventionBase,
+  DistilledCandidate,
+  DistillDebouncer,
+  DistillExecutor,
+  DistillPromptInput,
+  DistillRequest,
+  DistillRunOptions,
+} from "./distill.js";
+export { handleSessionEnd } from "./session-end.js";
+export type { SessionEndHandlerOptions } from "./session-end.js";

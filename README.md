@@ -2,7 +2,7 @@
 
 在用户话语到达模型前，本地识别“上次”“这个文件”“一样的错误处理”等悬空指代，并在有证据时注入可追溯的上下文。无法可靠解析时保持原话，不猜测。
 
-## 能力（M1–M5b）
+## 能力（M1–M5c）
 
 ### 核心引擎（`@subconscious/core`，零运行时依赖）
 
@@ -29,12 +29,17 @@
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "disambiguation": [
     { "projectKey": "/work/proj", "sessionId": "abc", "title": "错误处理改造", "at": "2026-09-14T10:00:00.000Z" }
   ],
   "phrases": [
     { "phrase": "咱们那个摊子", "expectedType": "project", "hint": "指当前主力仓库（可选）" }
+  ],
+  "conventions": [
+    { "id": "c-…", "projectKey": "/work/proj", "expression": "错误处理", "content": "统一 try/catch 包裹并 log 错误，不吞异常",
+      "basedOnSessionId": "abc", "basedOnSessionTitle": "错误处理改造",
+      "generatedAt": "2026-09-15T10:00:00.000Z", "lastHitAt": "2026-09-15T10:00:00.000Z", "hitCount": 0 }
   ]
 }
 ```
@@ -44,6 +49,23 @@
 - **查看 / 清除 / 迁移**：文件为两空格缩进 JSON，打开即可查看与手工编辑；删除文件即清零（或清空对应数组）；新电脑复制该文件即完成迁移，程序化迁移用 `exportMemory` / `importMemory` 纯函数。
 - **隐私**：内容是你自己选择的记录（项目路径 + 会话标题 + 自注册短语），本地存储、本地消费、不离开设备，按 L0 对待；引擎不传 `memory` 选项时不学习不读取，行为与无此层完全一致。上限：先验 100 条（写入时裁剪 14 天窗口外记录）、词条 200 条、短语 ≤64 字符。
 - **适配器接线（M5b，默认启用）**：三个适配器在引擎构造时读取 `~/.subconscious/memory.json`（`SUBCONSCIOUS_MEMORY_FILE` 可覆盖路径，空白视为未设置）。pi 有真实 select 通道 → 亲选即学习；claude / opencode 无 select 通道 → 不学习，但共享同一记忆文件的先验可自动代选（跨宿主共享：pi 学、处处用）。每事件重建引擎（D11）→ 词典每 prompt 重读，手工编辑即时生效。文件缺失 / 损坏 fail-open 为空记忆，绝不阻塞宿主；各包测试经 vitest setup 把路径钉到临时目录，不触真实 `~/.subconscious`。
+
+### 项目惯例蒸馏（M5c：会话结束 → 宿主 LLM 总结 → memory.json `conventions`）
+
+「照旧 / 按老规矩 / 咱们那套」类指代解析为**蒸馏后的惯例值**（设计稿 `docs/CONVENTIONS.md`，裁定 D25，适配器接线 D26）。数据流：会话结束事件 → 适配器组装素材 → **宿主 LLM headless 总结**（core 零 LLM 红线不破）→ 适配器校验（JSON 解析 / 逐条形状 `isConvention` / 超 5 条截断 / 敏感内容粗筛 / 与现有条目逐字节相同丢弃）→ `addConvention` 写回 memory.json。注入侧（M5c-1 已交付）：惯例优先于会话绑定；首次注入经 **L1 授权**（pi 弹 confirm，claude / opencode 注入「待确认」块让模型问用户），授权后本项目自动使用、display 恒带生成出处；90 天未命中写时淘汰、同名后写胜。
+
+| 宿主 | 触发事件 | 蒸馏执行 | 会话素材 |
+|---|---|---|---|
+| pi | `session_shutdown`（quit/new/resume/fork；reload 跳过） | fire-and-forget detached 子进程 `node distill-child.js` → headless `pi --offline --no-session --no-extensions --no-skills --no-tools -p` | 会话 JSONL 尾部有界读取（≤64KB）→ 用户话语 + edit/write 修改记录 |
+| Claude Code | hooks `SessionEnd`（同一 bin 双注册） | hook 进程内 spawn headless `claude -p`（带防递归哨兵 `SUBCONSCIOUS_DISTILL_CHILD=1`，其内部 hook 一律 no-op） | transcript JSONL 尾部有界**原文拼接**（内部结构无官方文档、不解析字段——近似素材） |
+| OpenCode | `event` hook 的 `session.idle`（每轮触发，按会话冷却 30 分钟去抖） | 官方 client 侧 LLM 调用 `client.session.prompt`（临时会话内进行、`tools:{}` 结构性禁用工具、完成即删；临时会话的事件/消息本插件跳过，防自触发） | `session.get`（标题）+ `session.diff`（FileDiff），全走官方 SDK |
+
+- **开关**：`SUBCONSCIOUS_DISTILL=0` 关闭（其余任何值含未设置 = 开）；`SUBCONSCIOUS_DISTILL_TIMEOUT_MS` 覆盖蒸馏超时（pi/opencode 默认 60s、claude 默认 50s，上限 300s；claude 调高时需同步调高 settings.json 的 hook `timeout`）；pi/claude 的 headless 命令可经 `SUBCONSCIOUS_DISTILL_BIN` 覆盖（测试注入假可执行文件用）。
+- **去抖**：同会话重复结束事件只蒸馏一次（进程内记忆；pi 的 quit 前 new/resume/fork 往返不重复蒸馏）。
+- **fail-open**：蒸馏任何失败（素材读取 / 子进程 / 超时 / 输出非法 / 写回）= stderr 单行 warn 后静默跳过，宿主会话与退出流程零影响；不做网络重试。
+- **隐私**：蒸馏素材是会话内容，交给你正在使用的宿主模型处理（pi `--offline` 除外——离线模型本地推理；claude/opencode 走宿主自身的模型服务，与你在该会话中对话的暴露面一致）；蒸馏产物只落本地 memory.json（打开即可查看/编辑）；pi 的素材中转文件 0600 权限、读完即删；opencode 临时会话完成即删（删除失败时标题可辨识「subconscious 惯例蒸馏（临时，可删除）」）。**清除**：清空 memory.json 的 `conventions` 数组（或删文件）即清零；**完全关闭蒸馏**：设 `SUBCONSCIOUS_DISTILL=0`。
+- **授权与撤销**：蒸馏**写入**不需授权（本地文件）；**注入**走 L1（grants.json 的 `conventions` 条目，删该条即撤销授权）。错误蒸馏的纠正：手工编辑/删除对应条目，或话语否定（「这次别按老规矩」单次跳过）。
+- **验证边界（mock vs 真实）**：蒸馏链路的测试全部离线——headless 宿主 CLI 用**假可执行文件**（shell 脚本回放固定 JSON）与注入的假执行器/假 SDK 客户端驱动，hook/child 是真实编译产物子进程；**没有真人 pi / Claude Code / OpenCode 宿主端到端蒸馏验证**（监督约束禁改全局宿主配置、不触真实会话）。
 
 ### 可选 embedding 检测器（`@subconscious/embedding-local`）
 
@@ -91,14 +113,15 @@ pi --offline --no-session --no-extensions --no-skills \
 **已验证（离线 / 协议级）**：
 
 - 全部单元与集成测试离线运行（无网络、无真实账户）；embedding 接线测试用 fixture provider 注入，不依赖真实模型。
-- adapter-claude：真实子进程协议测试（spawn `dist/hook-main.js`，stdin/stdout JSON 往返）；监督者 M4a 验收时亲测子进程协议。
-- adapter-opencode：`SubconsciousPlugin` 通过锁定版本 `@opencode-ai/plugin@1.18.30` 类型检查（协议形状证据）+ heyapi 形状假客户端驱动真实 core 引擎全链路；监督者 M4b 验收时亲测 dist 零 `@opencode-ai` 运行时引用与 dist/plugin.js 真实加载导出。
-- adapter-pi：本机 `pi 0.85.1` 真实扩展加载（`--offline --no-session`）。
+- adapter-claude：真实子进程协议测试（spawn `dist/hook-main.js`，stdin/stdout JSON 往返；SessionEnd 蒸馏路径同法——假 headless claude 可执行文件回放）；监督者 M4a 验收时亲测子进程协议。
+- adapter-opencode：`SubconsciousPlugin` 通过锁定版本 `@opencode-ai/plugin@1.18.30` 类型检查（协议形状证据）+ heyapi 形状假客户端驱动真实 core 引擎全链路（蒸馏执行面同为假客户端：临时会话 create/prompt/delete 全记录断言）；监督者 M4b 验收时亲测 dist 零 `@opencode-ai` 运行时引用与 dist/plugin.js 真实加载导出。
+- adapter-pi：本机 `pi 0.85.1` 真实扩展加载（`--offline --no-session`）；蒸馏链路经真实 `dist/distill-child.js` 子进程 + 假 headless pi 可执行文件驱动（detached fire-and-forget 全链路写回断言）。
 - tarball 独立消费者 smoke：四包 npm pack 后在全新目录安装导入并运行最小功能断言。
 
 **未做（不以 mock 冒充）**：
 
-- 没有真人 pi / Claude Code / OpenCode 宿主端到端验证（监督约束禁止改全局宿主配置或接触私人会话/剪贴板）；安装后建议先用无指代语句冒烟（行为应与裸宿主一致）。
+- 没有真人 pi / Claude Code / OpenCode 宿主端到端验证（监督约束禁止改全局宿主配置或接触私人会话/剪贴板）；**含 M5c 惯例蒸馏的真人端到端（真实宿主 CLI 蒸馏子进程）同样未做**——测试中宿主 CLI 一律为假可执行文件。安装后建议先用无指代语句冒烟（行为应与裸宿主一致）。
 - macOS 图片选择仅在 macOS 可用；纯终端 pi 无 active editor 时文件指代被诚实丢弃。
-- adapter-claude 的历史内容注入受限于 transcript 结构无官方文档，诚实 not-found。
+- adapter-claude 的历史内容注入受限于 transcript 结构无官方文档，诚实 not-found；蒸馏素材因此用 transcript 尾部**原文近似**（不解析字段）。
 - 真实模型评估中裸 "that"（"I like that idea"）存在已知误检（保留为已知边界，不以牺牲 7 个 TP 的 margin 换取单个 FP 消除）。
+- 蒸馏质量（提示词/门槛）未做人工标注评估（CONVENTIONS D-B：属 `.supervision/` 评估面）。

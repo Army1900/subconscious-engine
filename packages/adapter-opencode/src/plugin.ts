@@ -51,6 +51,8 @@ import type { InteractionRecord } from "./interact.js";
 import { embeddingDetectorResolver } from "./embedding-optin.js";
 import type { EmbeddingDetectorResolver } from "./embedding-optin.js";
 import { wireMemory } from "./memory.js";
+import { isDistillTempSession } from "./distill.js";
+import { sessionIdOfIdleEvent, toDistillSessionClient, triggerIdleDistillation } from "./idle.js";
 
 /** 本适配器登记的 L0 数据源（无确认通道，L1 clipboard / L3 image-acquisition 不注册） */
 export const OPENCODE_L0_SOURCES: readonly DataSource[] = [
@@ -269,13 +271,33 @@ export async function handleChatMessage(
  * 官方 Plugin 入口：安装方式（任选其一）：
  * - npm：opencode.json `{"plugin": ["@subconscious/adapter-opencode"]}`；
  * - 本地：把构建产物 dist/plugin.js 以 ESM 引用放入 `.opencode/plugins/`。
- * 每次 chat.message 重建引擎实例（D11 同源：避免跨事件缓存宿主对象）。
+ * 每次 chat.message 重建引擎实例（D11 同源：避免跨事件缓存宿主对象）；
+ * event hook 承接 M5c-2 惯例蒸馏（session.idle → fire-and-forget 蒸馏，
+ * SUBCONSCIOUS_DISTILL=0 关闭；蒸馏临时会话的事件/消息结构性跳过，防自触发）。
  */
 export const SubconsciousPlugin: Plugin = async (input) => ({
-  "chat.message": (hookInput, hookOutput) =>
-    handleChatMessage(
+  "chat.message": (hookInput, hookOutput) => {
+    if (isDistillTempSession(hookInput.sessionID)) return Promise.resolve(); // 蒸馏临时会话不注入
+    return handleChatMessage(
       { sessionID: hookInput.sessionID, cwd: input.directory, client: input.client },
       hookOutput,
       { logger: stderrLog },
-    ).then(() => undefined),
+    ).then(() => undefined);
+  },
+  event: ({ event }) => {
+    const sessionID = sessionIdOfIdleEvent(event);
+    if (sessionID !== null && !isDistillTempSession(sessionID)) {
+      // fire-and-forget：不等待蒸馏完成（永不抛出），宿主事件流零阻塞
+      void triggerIdleDistillation(
+        {
+          sessionID,
+          directory: input.directory,
+          session: toSessionClient(input.client?.session),
+          distill: toDistillSessionClient(input.client?.session),
+        },
+        { logger: stderrLog },
+      );
+    }
+    return Promise.resolve();
+  },
 });

@@ -2,7 +2,8 @@
 
 OpenCode plugin 适配器：在用户消息到达模型之前，经 `chat.message` hook 本地解析
 「上次」「这个项目」等悬空指代，把接地上下文 append-only 追加到**当前用户消息**。
-无法可靠解析时原样透传，绝不阻塞宿主消息流。
+无法可靠解析时原样透传，绝不阻塞宿主消息流。M5c-2 起兼承 `event` hook 的
+`session.idle`：会话空闲时做**项目惯例蒸馏**（见下文「惯例蒸馏」）。
 
 ## 工作方式
 
@@ -106,6 +107,43 @@ schema 与阈值见根 README「个人记忆层 v0」）：
 - **查看 / 清除 / 迁移**：文件为两空格缩进 JSON，打开即可查看与手工编辑；删除
   文件（或清空对应数组）即清零；新电脑复制该文件即完成迁移。
 
+## 惯例蒸馏（M5c-2，默认启用）
+
+会话空闲时把会话中反复出现的工作惯例蒸馏进 memory.json 的 `conventions` 段，
+供「照旧 / 老规矩」类指代解析（设计稿 `docs/CONVENTIONS.md`，DECISIONS D25/D26）：
+
+- **触发**：`event` hook 的 `session.idle`（`EventSessionIdle { properties:
+  { sessionID } }`，锁定版 `@opencode-ai/sdk@1.18.30` types.gen.d.ts 核实）。
+  OpenCode 无「会话销毁」事件，session.idle 每轮回复完成后都会触发——按会话
+  **冷却窗口去抖（默认 30 分钟）**：窗口内同会话只蒸馏一次，窗口过后允许重蒸馏
+  （upsert 语义下相同内容 no-op，只有素材演化才更新），把成本约束在每会话每窗口
+  至多一次。
+- **执行（官方 client 侧 LLM 调用面）**：`client.session.prompt`（POST
+  /session/{id}/message，sdk.gen.d.ts:174；响应即 `{ info: AssistantMessage,
+  parts }` 助手回复）——**蒸馏在临时会话内进行**（`session.create` → prompt →
+  `session.delete`），绝不污染用户会话；`tools: {}` 结构性禁用工具 + 系统提示
+  约束 JSON 输出。备选的 spawn `opencode run` 子进程方案**未采用**（client 面已
+  公开且足够，D26 记录证据）。
+- **素材**：`session.get`（标题）+ `session.diff`（FileDiff 修改记录），全走官方
+  SDK 客户端、不直读内部存储（D21.3 纪律）；条数与字符双重上限。
+- **防自触发**：临时会话登记进进程内注册表，本插件对它的 `chat.message` /
+  `session.idle` 一律跳过（蒸馏回复的 idle 不会再触发蒸馏、蒸馏消息不被注入）。
+- **校验（不信模型输出）**：JSON 解析失败放弃；逐条形状校验（expression ≤16 字 /
+  content ≤120 字）非法丢弃；超 5 条截断；敏感内容粗筛命中丢弃；与现有条目逐字节
+  相同丢弃（防「洗时间」）。
+- **开关与配置**：`SUBCONSCIOUS_DISTILL=0` 关闭（其余任何值含未设置 = 开）；
+  `SUBCONSCIOUS_DISTILL_TIMEOUT_MS` 覆盖蒸馏超时（正整数，默认 60000，上限
+  300000）。
+- **fire-open**：蒸馏在后台 promise 内完成（event hook 立即返回，绝不阻塞宿主
+  事件流）；任何失败 = stderr 单行 warn 后静默跳过；不做网络重试。
+- **隐私**：素材是会话标题与修改记录，交给你正在使用的 OpenCode 模型处理（与你
+  在该会话中对话的暴露面一致）；临时会话完成即删（删除失败时标题可辨识
+  「subconscious 惯例蒸馏（临时，可删除）」）；产物只落本地 memory.json；
+  **清除** = 清空 `conventions` 数组（或删文件）；**完全关闭** =
+  `SUBCONSCIOUS_DISTILL=0`。
+- **注入侧授权**：蒸馏写入不需授权；惯例**注入**走 L1-grant-once（首次注入经
+  「待确认」块让模型问用户——本宿主无确认通道，core 已处理），grants.json 可撤销。
+
 ## 诚实边界（不猜测）
 
 - 插件 API 无编辑器状态 → `activeEditor` 缺失，文件/符号指代诚实丢弃。
@@ -119,7 +157,9 @@ schema 与阈值见根 README「个人记忆层 v0」）：
 离线）、parts 读写纪律、降级端口、`handleChatMessage` 全链路（真实 core 引擎 +
 假宿主客户端：注入 / no-op / 待确认降级 / fail-open / 总超时）、官方 `Plugin`
 类型接线（`SubconsciousPlugin` 通过 `@opencode-ai/plugin@1.18.30` 的类型检查即
-协议形状证据）。
+协议形状证据）、蒸馏全链路（假 SDK 客户端：临时会话 create/prompt/delete 调用
+记录断言、`session.idle` 触发写回、临时会话防自触发、冷却窗口去抖、开关与
+fail-open）。
 
 **mock ≠ 真实宿主**：本包未做真实 OpenCode 宿主端到端验证（监督约束禁止改全局
 宿主配置）；安装后建议先用无指代语句冒烟（行为应与裸 OpenCode 完全一致），再用

@@ -37,5 +37,42 @@ export {
   MODEL_DIR_ENV_VAR,
 } from "./embedding-optin.js";
 export type { EmbeddingDetectorResolver, EmbeddingLoadOptions } from "./embedding-optin.js";
-export { MEMORY_FILE_ENV_VAR, resolveMemoryFilePath, wireMemory } from "./memory.js";
+export { MEMORY_FILE_ENV_VAR, fileMemoryStoreFor, resolveMemoryFilePath, wireMemory } from "./memory.js";
 export type { MemoryWireOptions, MemoryWiring } from "./memory.js";
+export {
+  buildConventionEntries,
+  composeDistillPrompt,
+  createDistillDebouncer,
+  DEFAULT_DISTILL_TIMEOUT_MS,
+  distillViaTempSession,
+  DISTILL_COOLDOWN_MS,
+  DISTILL_ENV_VAR,
+  DISTILL_MATERIAL_MAX_CHARS,
+  DISTILL_TEMP_SESSION_TITLE,
+  DISTILL_TIMEOUT_ENV_VAR,
+  extractDistillCandidates,
+  isDistillEnabled,
+  isDistillTempSession,
+  looksSensitive,
+  markDistillTempSession,
+  MAX_DISTILL_CONVENTIONS,
+  MAX_DISTILL_DEBOUNCE_ENTRIES,
+  MAX_DISTILL_TIMEOUT_MS,
+  MAX_TEMP_SESSIONS,
+  readSessionMaterial,
+  resolveDistillTimeoutMs,
+  runDistillation,
+} from "./distill.js";
+export type {
+  ConventionBase,
+  DistilledCandidate,
+  DistillDebouncer,
+  DistillExecutor,
+  DistillPromptInput,
+  DistillRequest,
+  DistillRunOptions,
+  DistillSessionClient,
+  SessionMaterial,
+} from "./distill.js";
+export { sessionIdOfIdleEvent, toDistillSessionClient, triggerIdleDistillation } from "./idle.js";
+export type { IdleDistillInput, IdleDistillOptions, IdleEventLike, SdkDistillSource } from "./idle.js";

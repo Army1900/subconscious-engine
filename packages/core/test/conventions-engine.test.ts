@@ -286,6 +286,31 @@ describe("L1 授权（D-C：sourceId=conventions、scope=projectKey、grant-once
     expect(out.dropReasons?.[out.droppedRefs[0] as string]).toBe("interaction-unsupported");
     expect(memory.hits).toEqual([]);
   });
+
+  it("隐私红线：confirm 文案不得携带惯例内容（无通道宿主会转播 prompt 给模型）", async () => {
+    const memory = new ConventionMemory();
+    const secret = "机密内容内容锚点XYZ";
+    memory.conventions = [convention({ content: secret })];
+    const prompts: string[] = [];
+    const engine = createEngine({
+      sources: [recentSessionsSource],
+      memory,
+      timer: fixedTimer(),
+      interact: {
+        confirm: async (prompt) => {
+          prompts.push(prompt);
+          return "unsupported";
+        },
+        select: async () => "unsupported",
+        acquire: async () => null,
+      },
+    });
+    const out = await engine.enrich("按老规矩处理一下", plainEnv());
+    expect(out.context).toBeUndefined();
+    expect(prompts.length).toBe(1);
+    expect(prompts[0]).toContain("错误处理"); // 惯例名可见（用户决策所需）
+    expect(prompts[0]).not.toContain(secret); // 惯例内容必须门内
+  });
 });
 
 describe("优先序与回退（行为不劣化）", () => {

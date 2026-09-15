@@ -761,10 +761,12 @@ async function tryResolveByConvention(
     anchored.length === 1 ? (anchored[0] as ConventionEntry) : anchored.length === 0 && active.length === 1 ? (active[0] as ConventionEntry) : null;
   const pool = anchored.length > 0 ? anchored : active;
 
-  // L1 授权门在注入与候选交互之前（授权是"源"的属性：一次授权覆盖本项目后续注入）
+  // L1 授权门在注入与候选交互之前（授权是"源"的属性：一次授权覆盖本项目后续注入）。
+  // 隐私红线（监督者 M5c-2 验收发现）：确认文案只点名惯例名（expression），
+  // 不得携带惯例内容——无确认通道的宿主会把 confirm 文案转播给模型，内容必须在授权后才可见。
   const confirmPrompt =
     direct !== null
-      ? `按惯例「${direct.expression}」= ${direct.content} 注入？授权后本项目自动使用（可随时撤销）`
+      ? `允许潜意识引擎按惯例「${direct.expression}」处理？授权后本项目自动使用其内容（可随时撤销）`
       : `允许潜意识引擎使用本项目惯例？候选：${conventionExpressionSummary(pool)}（授权后本项目自动使用，可随时撤销）`;
   const gate = await checkPermission(conventionPermissionSource(env.cwd), deps, { confirmPrompt });
   if (gate !== "allowed") return drop(gate); // 拒绝/无通道/预算耗尽：不注入确定结论
