@@ -165,6 +165,72 @@ function normalize(v: readonly number[]): number[] {
   return v.map((x) => x / norm);
 }
 
+/** 裸指示词闭集：span 仅为指示词时不含任何类型信息，任何类型的分类结论都是噪声（D23） */
+const BARE_DEMONSTRATIVES: ReadonlySet<string> = new Set([
+  "这",
+  "那",
+  "这个",
+  "那个",
+  "这些",
+  "那些",
+  "此",
+  "该",
+  "this",
+  "that",
+  "these",
+  "those",
+  "the",
+]);
+
+/** 拉丁虚词闭集：span 全部由虚词构成时同样无类型信息（"like that""this and that"） */
+const LATIN_FUNCTION_WORDS: ReadonlySet<string> = new Set([
+  "this",
+  "that",
+  "these",
+  "those",
+  "the",
+  "a",
+  "an",
+  "it",
+  "its",
+  "is",
+  "was",
+  "like",
+  "liked",
+  "love",
+  "i",
+  "we",
+  "my",
+  "our",
+  "your",
+  "and",
+  "or",
+  "of",
+  "to",
+  "for",
+  "in",
+  "on",
+  "with",
+  "as",
+  "at",
+  "by",
+  "from",
+  "just",
+  "here",
+  "there",
+  "one",
+]);
+
+/** span 是否不含任何类型信息：中文 = 裸指示词；拉丁 = 全部 token 为虚词 */
+function isTypeInfoFree(text: string): boolean {
+  if (/[一-鿿]/.test(text)) return BARE_DEMONSTRATIVES.has(text);
+  const tokens = text
+    .toLowerCase()
+    .split(/[^a-z0-9._'-]+/)
+    .filter((t) => t.length > 0);
+  return tokens.length > 0 && tokens.every((t) => LATIN_FUNCTION_WORDS.has(t));
+}
+
 /** 各向量先归一化再求均值再归一化（每条示例等权） */
 function meanDirection(vectors: readonly (readonly number[])[]): number[] | null {
   const dim = vectors[0]?.length ?? 0;
@@ -279,6 +345,19 @@ function generateCandidates(prompt: string, maxCandidates: number): readonly Can
   return capCandidates(out, maxCandidates);
 }
 
+/** [start,end) 是否完全落在单一 CJK 连续段内；是则返回该段边界，否则 null（拉丁/混合 span 不扩展） */
+function cjkRunBounds(prompt: string, start: number, end: number): { rs: number; re: number } | null {
+  if (start >= end) return null;
+  for (let i = start; i < end; i += 1) {
+    if (!isCjkUnit(prompt.charCodeAt(i))) return null;
+  }
+  let rs = start;
+  while (rs > 0 && isCjkUnit(prompt.charCodeAt(rs - 1))) rs -= 1;
+  let re = end;
+  while (re < prompt.length && isCjkUnit(prompt.charCodeAt(re))) re += 1;
+  return { rs, re };
+}
+
 /** 超上限时等步长抽样（保序、含首尾可达，确定性覆盖全句） */
 function capCandidates(candidates: readonly CandidateSpan[], max: number): readonly CandidateSpan[] {
   if (candidates.length <= max) return candidates;
@@ -345,6 +424,28 @@ function resolveEmbeddingOverlaps(items: readonly ScoredCandidate[]): readonly S
     kept.push(item);
   }
   return kept;
+}
+
+/** 同类型相接/重叠的命中合并为一个指代：同一自然短语被多个种子分段命中时不重复计数 */
+function coalesceAdjacentSameType(prompt: string, items: readonly ScoredCandidate[]): readonly ScoredCandidate[] {
+  const sorted = [...items].sort((a, b) => a.start - b.start || a.end - b.end);
+  const out: ScoredCandidate[] = [];
+  for (const item of sorted) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && prev.type === item.type && item.start <= prev.end) {
+      const end = Math.max(prev.end, item.end);
+      out[out.length - 1] = {
+        start: prev.start,
+        end,
+        text: prompt.slice(prev.start, end),
+        type: prev.type,
+        confidence: Math.max(prev.confidence, item.confidence),
+      };
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
 }
 
 /** 规则结果优先：重叠区间丢 embedding 命中；非重叠合并后按 span 升序统一重编 id */
@@ -448,11 +549,85 @@ export class EmbeddingDetector implements Detector, AsyncDetector {
         return ruleRefs;
       }
       const scored = classifyByPrototypes(vec, space, this.thresholds);
-      if (scored !== null) {
+      // 无类型信息 span（裸指示词/纯虚词）拒绝在入列前：给"那个方法"这类完整短语让位
+      if (scored !== null && !isTypeInfoFree(cand.text)) {
         hits.push({ start: cand.start, end: cand.end, text: cand.text, type: scored.type, confidence: scored.confidence });
       }
     }
-    return mergeWithRuleRefs(ruleRefs, resolveEmbeddingOverlaps(hits));
+    const survivors = resolveEmbeddingOverlaps(hits);
+    const extended = await this.extendHits(prompt, survivors, ruleRefs, space, ctx, cache);
+    if (extended === null) return ruleRefs; // 扩展阶段中止/故障/预算耗尽 → 整次规则回退（与分类阶段同语义）
+    return mergeWithRuleRefs(ruleRefs, extended);
+  }
+
+  /**
+   * span 扩展（D23）：滑窗命中（≤6 字）常截断自然短语（如"前讨论的"）。
+   * 在 CJK 连续段内逐步向两侧延展，延展文本仍分类为同类型才保留；不越过规则命中区间
+   * 与其他命中区间（模板/相邻命中优先）；扩展 embed 与分类共享同额上限（总 ≤ 2×maxCandidates）。
+   * 拉丁 n-gram 本就按词边界生成，不参与扩展。返回 null = 整次规则回退。
+   */
+  private async extendHits(
+    prompt: string,
+    hits: readonly ScoredCandidate[],
+    ruleRefs: readonly DanglingRef[],
+    space: PrototypeSpace,
+    ctx: DetectorContext | undefined,
+    cache: Map<string, EmbeddingVector>,
+  ): Promise<readonly ScoredCandidate[] | null> {
+    const provider = this.provider;
+    if (provider === null || hits.length === 0) return hits;
+    // 阻挡区间 = 规则命中 + 已扩展完成的其他命中 + 尚未处理的其他命中种子（不含自身）
+    const fixed = ruleRefs.map((ref) => [ref.span[0], ref.span[1]] as const);
+    const seeds = hits.map((hit) => [hit.start, hit.end] as const);
+    const processed: Array<readonly [number, number]> = [];
+    let extensionBudget = this.maxCandidates;
+    const extended: ScoredCandidate[] = [];
+    for (let i = 0; i < hits.length; i += 1) {
+      const hit = hits[i]!;
+      const blockers = [...fixed, ...processed, ...seeds.slice(i + 1)];
+      const run = cjkRunBounds(prompt, hit.start, hit.end);
+      let start = hit.start;
+      let end = hit.end;
+      let confidence = hit.confidence;
+      if (run !== null) {
+        for (const direction of [1, -1] as const) {
+          for (;;) {
+            const nextStart = direction === 1 ? start : start - 1;
+            const nextEnd = direction === 1 ? end + 1 : end;
+            if (nextStart < run.rs || nextEnd > run.re) break;
+            if (blockers.some((s) => nextStart < s[1] && s[0] < nextEnd)) break;
+            if (extensionBudget <= 0) break;
+            const text = prompt.slice(nextStart, nextEnd);
+            let vec = cache.get(text);
+            if (vec === undefined) {
+              extensionBudget -= 1;
+              try {
+                const got = await this.embedText(provider, text, ctx);
+                if (got === null) return null; // 中止 → 整次规则回退
+                vec = got;
+              } catch (err) {
+                this.recordFailure(`extend-embed-error:${errorMessage(err)}`);
+                return null;
+              }
+              cache.set(text, vec);
+            }
+            if (this.outOfBudget(ctx)) return null; // 时钟预算耗尽 → 整次规则回退（D19.5 同源）
+            if (vec.length !== space.dimension || !isFiniteVector(vec)) {
+              this.recordFailure(`extend-vector-invalid(len=${vec.length}, dim=${space.dimension})`);
+              return null;
+            }
+            const scored = classifyByPrototypes(vec, space, this.thresholds);
+            if (scored === null || scored.type !== hit.type) break; // 类型漂移 → 停在当前边界
+            start = nextStart;
+            end = nextEnd;
+            confidence = scored.confidence;
+          }
+        }
+      }
+      extended.push({ start, end, text: prompt.slice(start, end), type: hit.type, confidence });
+      processed.push([start, end]);
+    }
+    return coalesceAdjacentSameType(prompt, resolveEmbeddingOverlaps(extended));
   }
 
   // ---- 内部：规则回退与预算 ----

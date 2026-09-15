@@ -37,6 +37,16 @@ describe("fixture keyword provider", () => {
     expect(noise[FIXTURE_DIMENSION - 1]).toBeCloseTo(1, 6);
   });
 
+  it("盲区补齐轮新增关键词命中内容轴（聊出/agreed）", () => {
+    const zh = fixtureEmbed("咱们聊出来的那套思路");
+    expect(zh[5]).toBeCloseTo(1, 6); // history-content 轴
+    const en = fixtureEmbed("the principles we agreed on");
+    expect(en[5]).toBeCloseTo(1, 6);
+    // 近义负例不命中：惯常讨论（无"聊出"）、哲学闲聊
+    expect(fixtureEmbed("我喜欢讨论那些想法")[FIXTURE_DIMENSION - 1]).toBeCloseTo(1, 6);
+    expect(fixtureEmbed("最近在读斯多葛哲学")[FIXTURE_DIMENSION - 1]).toBeCloseTo(1, 6);
+  });
+
   it("作为 provider 接入 core 检测器：规则外表述可检出", async () => {
     const provider = createFixtureKeywordProvider();
     expect(provider.id).toBe(FIXTURE_PROVIDER_ID);

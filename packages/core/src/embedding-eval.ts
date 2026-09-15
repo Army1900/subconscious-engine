@@ -64,15 +64,16 @@ export const EMBEDDING_EVAL_SET: readonly EmbeddingEvalCase[] = [
   { prompt: "分析这个项目的结构", expected: [{ text: "这个项目", type: "project", origin: "rule" }] },
   { prompt: "open that pic from the chat", expected: [{ text: "that pic", type: "image", origin: "rule" }] },
 
-  // ---- 正例：规则外表述（embedding 专属增量；监督 m3SeparateFromM1「照老规矩」在内）----
+  // ---- 正例：规则外表述（embedding 专属增量）----
   { prompt: "就按老套路再实现一遍", expected: [{ text: "老套路", type: "history-content", origin: "embedding" }] },
   {
     prompt: "照老规矩处理这段代码",
     expected: [
-      { text: "老规矩", type: "history-content", origin: "embedding" },
+      // 老规矩：盲区补齐轮起由规则模板覆盖（前缀动词 + 老规矩），origin 相应翻转为 rule
+      { text: "老规矩", type: "history-content", origin: "rule" },
       { text: "这段代码", type: "code-symbol", origin: "embedding" },
     ],
-    note: "监督 holdout m3SeparateFromM1 用例",
+    note: "监督 holdout 用例：老规矩已规则化，这段代码仍为 embedding 专属",
   },
   { prompt: "把这块代码抽出去", expected: [{ text: "这块代码", type: "code-symbol", origin: "embedding" }] },
   { prompt: "回到之前那一版", expected: [{ text: "之前那一版", type: "history-event", origin: "embedding" }] },
@@ -99,6 +100,40 @@ export const EMBEDDING_EVAL_SET: readonly EmbeddingEvalCase[] = [
     ],
   },
 
+  // ---- 正例：内容指代自然表述（盲区补齐轮新增；规则模板与 embedding 措辞均与训练示例不同）----
+  { prompt: "错误处理照老规矩来一遍", expected: [{ text: "照老规矩", type: "history-content", origin: "rule" }] },
+  { prompt: "把这几个告警照着清理一下", expected: [{ text: "照着清理", type: "history-content", origin: "rule" }] },
+  { prompt: "把定好的编码约定补进 README", expected: [{ text: "定好的编码约定", type: "history-content", origin: "rule" }] },
+  { prompt: "别偏离当初定下的设计哲学", expected: [{ text: "定下的设计哲学", type: "history-content", origin: "rule" }] },
+  {
+    prompt: "把咱们之前讨论过的结论落成文档",
+    expected: [
+      { text: "之前", type: "history-event", origin: "rule" },
+      { text: "讨论过的结论", type: "history-content", origin: "rule" },
+    ],
+  },
+  {
+    prompt: "把上次碰撞出的点子挑两个做原型",
+    expected: [
+      { text: "上次", type: "history-event", origin: "rule" },
+      { text: "碰撞出的点子", type: "history-content", origin: "rule" },
+    ],
+  },
+  {
+    prompt: "上次那个错误处理的改造也补了测试",
+    expected: [
+      { text: "上次", type: "history-event", origin: "rule" },
+      { text: "错误处理的改造", type: "history-content", origin: "rule" },
+    ],
+  },
+  { prompt: "还是沿用咱们那套做法", expected: [{ text: "咱们那套做法", type: "history-content", origin: "embedding" }] },
+  { prompt: "把咱们聊出来的那套思路往下推", expected: [{ text: "聊出来的那套思路", type: "history-content", origin: "embedding" }] },
+  { prompt: "handle it same as our discussion", expected: [{ text: "same as our discussion", type: "history-content", origin: "embedding" }] },
+  {
+    prompt: "stick to the principles we agreed on when naming things",
+    expected: [{ text: "principles we agreed on", type: "history-content", origin: "embedding" }],
+  },
+
   // ---- 负例（必须零检出；含监督 holdout 负例）----
   { prompt: "你好", expected: [] },
   { prompt: "解释快速排序", expected: [] },
@@ -112,6 +147,12 @@ export const EMBEDDING_EVAL_SET: readonly EmbeddingEvalCase[] = [
   { prompt: "what is the capital of France", expected: [] },
   { prompt: "run the tests now", expected: [] },
   { prompt: "please wait a moment", expected: [] },
+
+  // ---- 负例（盲区补齐轮新增：哲学/闲聊/外部参照物不误触）----
+  { prompt: "我喜欢讨论那些想法", expected: [], note: "惯常讨论（无体验态\"过/出\"），非历史内容指代" },
+  { prompt: "最近在读斯多葛哲学，蛮治愈的", expected: [], note: "哲学闲聊（读书感想），非定下的设计哲学" },
+  { prompt: "照着说明书装家具挺解压的", expected: [], note: "外部参照物（说明书+装），非照着既有内容清理" },
+  { prompt: "周末去爬山，风景真不错", expected: [], note: "纯闲聊" },
 ];
 
 /**

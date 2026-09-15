@@ -34,7 +34,7 @@ const LEXICON: readonly LexiconEntry[] = [
   { type: "image", cjk: ["图", "照片", "截图"], latin: ["image", "picture", "photo", "screenshot", "pic"] },
   { type: "project", cjk: ["项目", "工程", "仓库", "代码库"], latin: ["project", "repo", "codebase", "monorepo"] },
   { type: "history-event", cjk: ["上次", "上一", "前一", "刚才", "之前"], latin: ["last", "previous", "earlier"] },
-  { type: "history-content", cjk: ["规矩", "套路", "办法", "做法", "照旧", "一样", "同样"], latin: ["usual", "same"] },
+  { type: "history-content", cjk: ["规矩", "套路", "办法", "做法", "照旧", "一样", "同样", "聊出", "点子", "思路", "商量", "定好", "设计哲学"], latin: ["usual", "same", "agreed", "settled", "bounced"] },
   { type: "text", cjk: ["剪贴板", "粘贴", "复制"], latin: ["clipboard", "copied", "pasted"] },
 ];
 

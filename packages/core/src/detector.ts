@@ -35,10 +35,48 @@ const PATTERNS: readonly RefPattern[] = [
   { source: "(当前|本)(目录)", flags: "g", type: "project", confidence: 0.8 },
   { source: "(剪贴板|粘贴板)(内容)?", flags: "g", type: "text", confidence: 0.9 },
   // ---- 中文：history-event ----
-  { source: "(上一次|上次|上一回|上回|刚才)", flags: "g", type: "history-event", confidence: 0.85 },
+  // "刚才"拆分（D23）：跨会话继续语境（接着/回到/从 + 刚才，或"刚才"紧邻话题词）保留
+  // 高置信可解析；裸"刚才"多为会话内指代（模型上下文本就可见，触发历史会话候选框属噪声），
+  // 置信度降至默认引擎阈值（minConfidence 0.5）之下，由引擎静默丢弃（droppedRefs 仍透明可见）。
+  { source: "(上一次|上次|上一回|上回)", flags: "g", type: "history-event", confidence: 0.85 },
+  { source: "(接着|回到|找回|从)刚才", flags: "g", type: "history-event", confidence: 0.85 },
+  { source: "刚才(?=的话|那个|那次|这轮|话题|地方|进度|继续)", flags: "g", type: "history-event", confidence: 0.8 },
+  { source: "刚才", flags: "g", type: "history-event", confidence: 0.45 },
+  // "之前"仅在紧邻讨论动词时构成事件（lookahead 不消耗动词，让内容指代从动词起算，span 不重叠）；
+  // 裸"之前"单独不成指代（history.test 锁定的不变式）。
+  { source: "之前(?=(跟|和)?(你|咱们|我们)?(聊|谈|讨|商|碰))", flags: "g", type: "history-event", confidence: 0.8 },
   // ---- 中文：history-content（"一样的错误处理""和上次一样"）
   //      尾部内容词有界（≤10 个连续文字字符），不跨标点/空格 ----
   { source: "(一样|同样)(的)?[\\u4e00-\\u9fffA-Za-z0-9]{0,10}", flags: "g", type: "history-content", confidence: 0.85 },
+  // ---- 中文：history-content（自然表述，盲区补齐轮；均要求显式历史指向形态）----
+  // "按老规矩/照老规矩"：前缀动词必需（裸"老规矩"多为习俗义，无历史指向）
+  { source: "(按|照|依|遵循|沿用)老规矩", flags: "g", type: "history-content", confidence: 0.85 },
+  // "照着 X 弄/改/清理"：宾语仅允许代词性成分（这/那±个/块）或直接动词，
+  // "照着说明书装家具"类外部参照物（说明书+装）不触发
+  { source: "照着(这|那)?(个|块)?(弄|改|清理|调整|处理|重构|写|来|做)", flags: "g", type: "history-content", confidence: 0.85 },
+  // "定下的 X（原则/哲学/规矩/约定）"：名词封闭表，修饰语 ≤4 字
+  {
+    source: "(定下|定好|说定)(的)?[\\u4e00-\\u9fff]{0,4}(设计原则|设计哲学|原则|哲学|思想|规矩|约定|风格|思路|方案)",
+    flags: "g",
+    type: "history-content",
+    confidence: 0.85,
+  },
+  // "聊过的/讨论过的/碰撞出的（想法/思路/方案/点子）"：体验态"过/出"必需
+  //（"我喜欢讨论那些想法"类惯常义不触发）
+  {
+    source: "(聊|谈|讨论|商量|碰撞|碰)(过|出)的?(那些|这些|几个)?(想法|思路|方案|点子|结论|共识)",
+    flags: "g",
+    type: "history-content",
+    confidence: 0.85,
+  },
+  // "那个/这个 X 的 改造"：历史工作内容的名词化指代。lookbehind 使 span 不含指示词，
+  // 与封闭名词模板（"那个方法"）同现时模板先行占位、本模式因重叠让位（代码符号优先）。
+  {
+    source: "(?<=那个|这个)[\\u4e00-\\u9fff]{1,8}的(改造|修改|重构|优化|调整|处理方式)",
+    flags: "g",
+    type: "history-content",
+    confidence: 0.8,
+  },
   // ---- 英文：code-symbol ----
   { source: "\\bthis (function|method|class|variable|const|symbol)\\b", flags: "gi", type: "code-symbol", confidence: 0.9 },
   // ---- 英文：file ----

@@ -101,6 +101,114 @@ describe("规则检测器：负例（不得误检）", () => {
   }
 });
 
+describe("规则检测器：内容指代的自然表述（盲区补齐轮）", () => {
+  // ---- 按老规矩/照老规矩（前缀动词必需，裸"老规矩"不触发）----
+  it("按老规矩/照老规矩/沿用老规矩 → history-content", () => {
+    expect(detect("还是按老规矩，先把测试补上").map((r) => r.text)).toEqual(["按老规矩"]);
+    expect(detect("照老规矩处理这段代码").map((r) => r.text)).toEqual(["照老规矩"]);
+    expect(detect("沿用老规矩来命名").map((r) => r.text)).toEqual(["沿用老规矩"]);
+    expect(detect("照老规矩处理这段代码").map((r) => r.expectedType)).toEqual(["history-content"]);
+  });
+
+  it("近义负例：无前缀动词的\"老规矩\"（习俗义，无历史指向）不触发", () => {
+    expect(detect("咱们组的老规矩是周五聚餐")).toEqual([]);
+    expect(detect("老规矩先跑测试再说话")).toEqual([]);
+  });
+
+  // ---- 照着 X 弄/改/清理（宾语只能是代词性成分或直接动词）----
+  it("照着清理/照着弄/照着那个改 → history-content", () => {
+    const refs = detect("把这个文件也照着清理一遍");
+    expect(refs.map((r) => r.text)).toEqual(["这个文件", "照着清理"]);
+    expect(refs.map((r) => r.expectedType)).toEqual(["file", "history-content"]);
+    expect(detect("不知道怎么改，照着弄就行").map((r) => r.text)).toEqual(["照着弄"]);
+    expect(detect("照着那个改一版").map((r) => r.text)).toEqual(["照着那个改"]);
+  });
+
+  it("近义负例：照着说明书装家具（外部参照物，非历史内容）不触发", () => {
+    expect(detect("照着说明书装家具挺解压的")).toEqual([]);
+    expect(detect("照着视频教程学一遍")).toEqual([]);
+  });
+
+  // ---- 定下的 X（原则/哲学/规矩/约定）----
+  it("定下的设计哲学/定好的编码约定/说定的规矩 → history-content", () => {
+    expect(detect("把上次定下的设计哲学落实到这个模块").map((r) => r.expectedType)).toEqual([
+      "history-event",
+      "history-content",
+    ]);
+    expect(detect("把上次定下的设计哲学落实到这个模块").map((r) => r.text)).toEqual([
+      "上次",
+      "定下的设计哲学",
+    ]);
+    expect(detect("沿用定好的编码约定").map((r) => r.text)).toEqual(["定好的编码约定"]);
+    expect(detect("按说定的规矩提交").map((r) => r.text)).toEqual(["说定的规矩"]);
+  });
+
+  it("近义负例：定下的目标/方案定下来了（名词不在封闭表）不触发", () => {
+    expect(detect("定下的目标是先跑通主流程")).toEqual([]);
+    expect(detect("方案定下来了，原则保持不变")).toEqual([]);
+  });
+
+  // ---- （之前/上次）聊过的/讨论过的/碰撞出的（想法/思路/方案/点子）----
+  it("之前聊过的那些想法 → 之前(history-event) + 聊过的那些想法(history-content)", () => {
+    const refs = detect("结合咱们之前聊过的那些想法再发散一下");
+    expect(refs.map((r) => r.expectedType)).toEqual(["history-event", "history-content"]);
+    expect(refs.map((r) => r.text)).toEqual(["之前", "聊过的那些想法"]);
+  });
+
+  it("讨论过的方案/碰撞出的点子 → history-content（可分别与上次/之前事件共存）", () => {
+    expect(detect("上次讨论过的方案再看看").map((r) => r.text)).toEqual(["上次", "讨论过的方案"]);
+    expect(detect("用咱们碰撞出的点子做原型").map((r) => r.text)).toEqual(["碰撞出的点子"]);
+  });
+
+  it("近义负例：无体验态\"过/出\"的讨论（我喜欢讨论那些想法）不触发", () => {
+    expect(detect("我喜欢讨论那些想法")).toEqual([]);
+    expect(detect("咱们聊聊新想法吧")).toEqual([]);
+  });
+
+  it("\"之前\"仅在紧邻讨论动词时构成 history-event（\"和之前一样处理\"不变式保持）", () => {
+    expect(detect("和之前一样处理").map((r) => r.expectedType)).toEqual(["history-content"]);
+    expect(detect("出发之前记得保存")).toEqual([]);
+  });
+
+  // ---- 那个/这个 X 的 改造（历史工作内容的名词化指代）----
+  it("上次那个错误处理的改造 → 上次(event) + 错误处理的改造(content)", () => {
+    const refs = detect("上次那个错误处理的改造也一起做了");
+    expect(refs.map((r) => r.expectedType)).toEqual(["history-event", "history-content"]);
+    expect(refs.map((r) => r.text)).toEqual(["上次", "错误处理的改造"]);
+  });
+
+  it("与封闭名词模板同现时模板优先：那个方法的修改保留 code-symbol", () => {
+    expect(detect("那个方法的修改在哪里").map((r) => r.expectedType)).toEqual(["code-symbol"]);
+  });
+
+  it("近义负例：这个报错的修复（后缀不在封闭表）不触发", () => {
+    expect(detect("看一下这个报错的修复进展")).toEqual([]);
+  });
+});
+
+describe("规则检测器：会话内\"刚才\"降噪", () => {
+  it("裸\"刚才\"仍检出但置信度低于默认引擎阈值 0.5（会话内指代留给模型）", () => {
+    const refs = detect("还是用刚才讨论的方案吧");
+    expect(refs.length).toBe(1);
+    const ref = refs[0] as DanglingRef;
+    expect(ref.text).toBe("刚才");
+    expect(ref.expectedType).toBe("history-event");
+    expect(ref.confidence).toBeLessThan(0.5);
+  });
+
+  it("跨会话继续语境（接着/回到/从 + 刚才）保留高置信 history-event", () => {
+    const a = detect("接着刚才的继续做");
+    expect(a.length).toBe(1);
+    expect((a[0] as DanglingRef).text).toBe("接着刚才");
+    expect((a[0] as DanglingRef).confidence).toBeGreaterThanOrEqual(0.5);
+    const b = detect("回到刚才没讲完的地方");
+    expect((b[0] as DanglingRef).text).toBe("回到刚才");
+    const c = detect("新会话里说继续刚才那个话题");
+    expect((c[0] as DanglingRef).text).toBe("刚才");
+    expect((c[0] as DanglingRef).confidence).toBeGreaterThanOrEqual(0.5);
+  });
+});
+
 describe("规则检测器：健壮性", () => {
   it("非字符串输入返回空且不抛出", () => {
     expect(detect(undefined as unknown as string)).toEqual([]);

@@ -276,7 +276,7 @@ describe("EmbeddingDetector：向量近邻分类与合并", () => {
     };
   };
 
-  it("规则外表述「照老规矩」→ history-content，span 取其中最短高置信窗口", async () => {
+  it("「照老规矩」已由规则覆盖：重叠时规则优先，span 用规则完整短语", async () => {
     const { provider } = zhProvider();
     const detector = createEmbeddingDetector(provider, zhOptions());
     const prompt = "照老规矩处理这段代码";
@@ -284,9 +284,9 @@ describe("EmbeddingDetector：向量近邻分类与合并", () => {
     expect(refs.length).toBe(1);
     const ref = refs[0] as DanglingRef;
     expect(ref.expectedType).toBe("history-content");
-    expect(ref.text).toBe("老规矩");
+    expect(ref.text).toBe("照老规矩"); // 规则模板 span（前缀动词 + 老规矩）优先于 embedding 子窗口
     expect(prompt.slice(ref.span[0], ref.span[1])).toBe(ref.text);
-    expect(ref.confidence).toBeCloseTo(1, 5); // sim = 1 → 置信度上界
+    expect(ref.confidence).toBeCloseTo(0.85, 5); // 规则模板置信度，不被 embedding 改写
   });
 
   it("与规则结果合并：重叠时规则优先，非重叠 embedding 补充，按 span 排序", async () => {
@@ -294,7 +294,7 @@ describe("EmbeddingDetector：向量近邻分类与合并", () => {
     const detector = createEmbeddingDetector(provider, zhOptions());
     const prompt = "把这个函数改成照老规矩处理";
     const refs = await detector.detectAsync(prompt);
-    expect(refs.map((r) => r.text)).toEqual(["这个函数", "老规矩"]);
+    expect(refs.map((r) => r.text)).toEqual(["这个函数", "照老规矩"]);
     expect(refs.map((r) => r.expectedType)).toEqual(["code-symbol", "history-content"]);
     expect(refs.map((r) => r.id)).toEqual(["ref-1", "ref-2"]);
     // 规则项置信度保持模板值，不被 embedding 改写
@@ -309,6 +309,34 @@ describe("EmbeddingDetector：向量近邻分类与合并", () => {
     }
   });
 
+  it("裸指示词不成指代：仅含这个/那个/that 的 span 即使分类通过也拒绝（无类型信息）", async () => {
+    // 构造 provider 模拟真实形态：裸指示词（"那个"/"that"）单轴高分，
+    // 指示词+名词短语次之，其余落噪声轴（真实模型中上下文稀释使裸词得分更高）
+    const demoExamples: readonly EmbeddingExample[] = [
+      { text: "那个方法", type: "code-symbol" },
+      { text: "那个常量", type: "code-symbol" },
+      { text: "你好", type: "negative" },
+      { text: "跑测试", type: "negative" },
+    ];
+    const provider: EmbeddingProvider = {
+      id: "fixture-bare-demo",
+      async embed(text: string) {
+        if (text === "那个" || text === "that") return [1, 0];
+        if (text.includes("那个方法")) return [0.85, 0.53];
+        return [0, 1];
+      },
+    };
+    const detector = createEmbeddingDetector(provider, {
+      examples: demoExamples,
+      thresholds: { accept: 0.6, margin: 0.2 },
+    });
+    expect(await detector.detectAsync("我看那个啊再想想")).toEqual([]);
+    expect(await detector.detectAsync("I like that idea")).toEqual([]);
+    // 指示词 + 类型名词仍可命中（span 不是裸指示词，且不因裸词占位被挤掉）
+    const refs = await detector.detectAsync("改一下那个方法");
+    expect(refs.map((r) => r.text)).toEqual(["那个方法"]);
+  });
+
   it("Unicode（emoji 前缀）下 span 仍按码元精确且不切断代理对", async () => {
     const { provider } = zhProvider();
     const detector = createEmbeddingDetector(provider, zhOptions());
@@ -320,13 +348,70 @@ describe("EmbeddingDetector：向量近邻分类与合并", () => {
     expect(prompt.slice(ref.span[0], ref.span[1])).toBe(ref.text);
   });
 
-  it("maxCandidates 上限：候选 embed 次数有界", async () => {
+  it("maxCandidates 上限：候选 + span 扩展的 embed 次数有界（各 ≤ maxCandidates）", async () => {
     const { provider, calls } = zhProvider();
     const detector = createEmbeddingDetector(provider, zhOptions({ maxCandidates: 5 }));
     await detector.detectAsync("照老规矩处理这段代码再顺带整理一下这些零散的工具函数和配置", noBudget());
     const candidateCalls = calls() - EXAMPLES.length;
     expect(candidateCalls).toBeGreaterThan(0);
-    expect(candidateCalls).toBeLessThanOrEqual(5);
+    expect(candidateCalls).toBeLessThanOrEqual(10); // 分类 ≤5 + 扩展 ≤5（D23 有界性）
+  });
+
+  it("span 扩展：种子窗口在 CJK 连续段内延展到同类短语边界（标点即界）", async () => {
+    // 一维轴 fixture：含"聊出"→ history-content，否则 negative
+    const extendExamples: readonly EmbeddingExample[] = [
+      { text: "聊出来的结论", type: "history-content" },
+      { text: "碰出来的点子", type: "history-content" },
+      { text: "你好", type: "negative" },
+      { text: "跑测试", type: "negative" },
+    ];
+    const provider: EmbeddingProvider = {
+      id: "fixture-extend",
+      async embed(text: string) {
+        return text.includes("聊出") ? [1, 0] : [0, 1];
+      },
+    };
+    const detector = createEmbeddingDetector(provider, {
+      examples: extendExamples,
+      thresholds: { accept: 0.6, margin: 0.2 },
+    });
+    const prompt = "把咱们聊出来的那套思路，往下推";
+    const refs = await detector.detectAsync(prompt);
+    expect(refs.length).toBe(1);
+    const ref = refs[0] as DanglingRef;
+    expect(ref.expectedType).toBe("history-content");
+    // 种子"聊出"(2 字) 扩展覆盖整个 CJK 连续段（该 fixture 下所有超串同类），
+    // 标点"，"截断：不越过到"往下推"
+    expect(ref.text).toBe("把咱们聊出来的那套思路");
+    expect(prompt.slice(ref.span[0], ref.span[1])).toBe(ref.text);
+  });
+
+  it("span 扩展：不越过规则命中区间（模板优先，扩展让位）", async () => {
+    const extendExamples: readonly EmbeddingExample[] = [
+      { text: "聊出来的结论", type: "history-content" },
+      { text: "碰出来的点子", type: "history-content" },
+      { text: "你好", type: "negative" },
+      { text: "跑测试", type: "negative" },
+    ];
+    const provider: EmbeddingProvider = {
+      id: "fixture-extend-rule",
+      async embed(text: string) {
+        return text.includes("聊出") ? [1, 0] : [0, 1];
+      },
+    };
+    const detector = createEmbeddingDetector(provider, {
+      examples: extendExamples,
+      thresholds: { accept: 0.6, margin: 0.2 },
+    });
+    const prompt = "咱们聊出来的那套思路改到这个文件里";
+    const refs = await detector.detectAsync(prompt);
+    const ruleRef = refs.find((r) => r.expectedType === "file");
+    const embRef = refs.find((r) => r.expectedType === "history-content");
+    expect(ruleRef?.text).toBe("这个文件");
+    expect(embRef).toBeDefined();
+    // 扩展在规则区间前停下：不与"这个文件"重叠，且从"咱们"起覆盖完整思路短语
+    expect((embRef as DanglingRef).span[1]).toBeLessThanOrEqual((ruleRef as DanglingRef).span[0]);
+    expect((embRef as DanglingRef).text).toContain("咱们聊出来的那套思路");
   });
 
   it("init 单飞：并发 detectAsync 只构建一次原型（每个示例只 embed 一次）", async () => {
