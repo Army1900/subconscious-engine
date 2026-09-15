@@ -4,6 +4,7 @@ import { createDeadlineClock, type DeadlineClock } from "./clock.js";
 import { EngineConfigError, errorMessage } from "./errors.js";
 import { guardInteract, UNSUPPORTED_INTERACT, type GuardedInteract } from "./interact.js";
 import { InMemoryGrantStore } from "./grants.js";
+import { autoResolvePriorCandidate, disambiguationWeights, rankByPrior } from "./memory.js";
 import { DataSourceRegistry, isDataType } from "./registry.js";
 import { isNonEmptyString, uniquifyLabels } from "./text.js";
 import { createSystemTimer } from "./timer.js";
@@ -14,6 +15,7 @@ import type {
   DataType,
   DataSource,
   Detector,
+  DisambiguationPrior,
   DropReason,
   EngineLimits,
   EngineOptions,
@@ -22,6 +24,7 @@ import type {
   HostEnv,
   InteractPort,
   Logger,
+  MemoryStore,
   Resolution,
   ResolveContext,
   ResolvedValue,
@@ -213,6 +216,8 @@ export function createEngine(options: EngineOptions): SubconsciousEngine {
   const detector: Detector = options.detector ?? createRuleDetector();
   const grants: GrantStore = options.grants ?? new InMemoryGrantStore();
   const interactPort: InteractPort = options.interact ?? UNSUPPORTED_INTERACT;
+  // 个人记忆层（M5a）：缺省无记忆——不学习、不加权，行为与无此层逐字节一致
+  const memory: MemoryStore | undefined = options.memory;
 
   // 注册表在构造期受控失败（重复 id / 未知类型 / 非法声明）；enrich 永不抛出
   const registry = new DataSourceRegistry();
@@ -226,7 +231,7 @@ export function createEngine(options: EngineOptions): SubconsciousEngine {
     async enrich(prompt: string, env: HostEnv): Promise<EnrichOutput> {
       // fail-open 总闸：内部一切异常都不阻塞 prompt 发出（DESIGN §5.3）
       try {
-        return await runEnrich(prompt, env, { limits, timer, logger, detector, grants, interactPort, registry });
+        return await runEnrich(prompt, env, { limits, timer, logger, detector, grants, interactPort, registry, memory });
       } catch (err) {
         logger({ level: "error", event: "enrich-failed", detail: errorMessage(err) });
         return emptyOutput();
@@ -243,6 +248,7 @@ interface RunContext {
   grants: GrantStore;
   interactPort: InteractPort;
   registry: DataSourceRegistry;
+  memory: MemoryStore | undefined;
 }
 
 async function runEnrich(prompt: string, env: HostEnv, run: RunContext): Promise<EnrichOutput> {
@@ -479,7 +485,7 @@ async function resolveRef(ref: DanglingRef, env: HostEnv, ctx: ResolveContext, d
         lastReason = "not-found";
         continue;
       case "ambiguous": {
-        const result = await resolveAmbiguous(ref, outcome.candidates, source.id, deps);
+        const result = await resolveAmbiguous(ref, outcome.candidates, source.id, env, deps);
         if (result.resolved !== undefined) return result;
         const reason = result.dropped?.reason;
         if (reason === "interaction-unsupported") {
@@ -555,10 +561,14 @@ async function checkPermission(source: DataSource, deps: ResolveRefDeps): Promis
   }
 }
 
+/** 自动代选标注（透明性：display 可审计——这是按用户常用选择代选，非用户本次亲选） */
+const PRIOR_AUTO_DISPLAY_SUFFIX = "（按你的常用选择）";
+
 async function resolveAmbiguous(
   ref: DanglingRef,
   candidates: readonly Candidate[],
   sourceId: string,
+  env: HostEnv,
   deps: ResolveRefDeps,
 ): Promise<RefOutcome> {
   const { clock, interact, run } = deps;
@@ -567,17 +577,80 @@ async function resolveAmbiguous(
   if (capped.length === 0) return drop("not-found");
   if (clock.expired()) return drop("budget-exhausted");
 
+  // --- 消歧先验（M5a）：只作用于 history-event 消歧的既有候选——
+  //     达门槛时代选（display 标注来源），否则加权排序后照旧弹 select（并继续学习）。
+  //     先验绝不把用户没提到的会话加进候选（预测注入红线，DESIGN §11.3）。
+  let ordered: readonly Candidate[] = capped;
+  if (ref.expectedType === "history-event" && run.memory !== undefined) {
+    const priors = await loadPriors(run.memory, run.logger);
+    if (clock.expired()) return drop("budget-exhausted"); // 预算红线：读取记忆后同样复查（D3.2）
+    if (priors !== null) {
+      const weights = disambiguationWeights(priors, env.cwd, run.timer.now());
+      const auto = autoResolvePriorCandidate(capped, weights);
+      if (auto !== null) {
+        return {
+          ref,
+          resolved: {
+            ref,
+            value: auto.candidate.value,
+            display: `${auto.candidate.label}${PRIOR_AUTO_DISPLAY_SUFFIX}`,
+            sourceId,
+          },
+        };
+      }
+      ordered = rankByPrior(capped, weights);
+    }
+  }
+
   // 重复标签仍映射稳定 id：uniquify 保证 label→候选一一对应（监督红线）
-  const labels = uniquifyLabels(capped.map((c) => c.label));
+  const labels = uniquifyLabels(ordered.map((c) => c.label));
   const picked = await runInteraction(clock, () => interact.select(`请选择「${ref.text}」所指：`, labels));
   if (picked === "unsupported") {
     return drop("interaction-unsupported"); // UI 不可用时不猜测（D5.5）
   }
   if (picked === null) return drop("user-cancelled");
   const index = labels.indexOf(picked);
-  if (index < 0 || index >= capped.length) return drop("user-cancelled");
-  const candidate = capped[index] as Candidate;
+  if (index < 0 || index >= ordered.length) return drop("user-cancelled");
+  const candidate = ordered[index] as Candidate;
+  await learnSelection(ref, candidate, env, deps);
   return { ref, resolved: { ref, value: candidate.value, display: candidate.label, sourceId } };
+}
+
+/** 读取先验；不可用返回 null（本次无先验，fail-open，行为等同今天） */
+async function loadPriors(memory: MemoryStore, logger: Logger): Promise<readonly DisambiguationPrior[] | null> {
+  try {
+    return await memory.listDisambiguation();
+  } catch (err) {
+    logger({ level: "warn", event: "memory-read-failed", detail: errorMessage(err) });
+    return null;
+  }
+}
+
+/**
+ * 学习：用户在 select 中显式选定历史会话 → 记录先验 {项目、会话 id、标题、时间}。
+ * 仅用户亲选时记录（自动代选不记，防自增强）；写失败只记日志（尽力而为）。
+ */
+async function learnSelection(
+  ref: DanglingRef,
+  candidate: Candidate,
+  env: HostEnv,
+  deps: ResolveRefDeps,
+): Promise<void> {
+  const { clock, run } = deps;
+  if (run.memory === undefined || ref.expectedType !== "history-event") return;
+  const value = candidate.value;
+  if (!isRecord(value) || value.type !== "history-event") return;
+  if (clock.signal.aborted) return; // 迟到回调不写记忆（D3.3 同源纪律）
+  try {
+    await run.memory.recordDisambiguation({
+      projectKey: env.cwd,
+      sessionId: value.sessionId,
+      title: value.title,
+      at: new Date(run.timer.now()).toISOString(),
+    });
+  } catch (err) {
+    run.logger({ level: "warn", event: "memory-write-failed", refId: ref.id, detail: errorMessage(err) });
+  }
 }
 
 async function resolveAcquisition(

@@ -278,6 +278,54 @@ export interface EnrichOutput {
 }
 
 // ---------------------------------------------------------------------------
+// 个人记忆层（M5a：消歧先验 + 个人惯用语词典；见 docs/DECISIONS.md D24）
+// ---------------------------------------------------------------------------
+
+/**
+ * 消歧先验：用户在 select 消歧中选定某历史会话的一次记录。
+ * 只用于对既有显式指代的候选做排序/保守代选，绝不用于注入用户没提到的会话。
+ */
+export interface DisambiguationPrior {
+  /** 项目标识：消歧发生时的 cwd（同项目 = 同路径字符串，精确匹配） */
+  projectKey: string;
+  sessionId: string;
+  title: string;
+  /** 选择发生时间（ISO 字符串） */
+  at: string;
+}
+
+/**
+ * 个人惯用语词条：短语 → 期望类型 + 可选解析提示。
+ * v0 只显式注册（addPersonalPhrase / memory.json 手工编辑），不自动学习；
+ * hint 仅存储与文档化，v0 不进入解析路径（预留）。
+ */
+export interface PersonalPhrase {
+  phrase: string;
+  expectedType: DataType;
+  hint?: string;
+}
+
+/** ~/.subconscious/memory.json 文件形状（version 1） */
+export interface MemoryData {
+  version: 1;
+  disambiguation: readonly DisambiguationPrior[];
+  phrases: readonly PersonalPhrase[];
+}
+
+/**
+ * 个人记忆存储端口。记忆是持久数据源而非引擎会话状态：
+ * 引擎每次 enrich 按需读取，不跨请求缓存选择结果（快照纪律不变）。
+ */
+export interface MemoryStore {
+  listDisambiguation(): Promise<readonly DisambiguationPrior[]>;
+  /** 学习入口（引擎内只在用户显式选择后调用；非法输入由实现方受控忽略） */
+  recordDisambiguation(entry: DisambiguationPrior): Promise<void>;
+  listPhrases(): Promise<readonly PersonalPhrase[]>;
+  /** 显式注册词条；非法词条受控失败（EngineConfigError "invalid-memory"） */
+  addPersonalPhrase(entry: PersonalPhrase): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // 引擎配置
 // ---------------------------------------------------------------------------
 
@@ -352,6 +400,8 @@ export interface EngineOptions {
   /** 交互端口；默认全 unsupported（降级路径，D5） */
   interact?: InteractPort;
   limits?: Partial<EngineLimits>;
+  /** 个人记忆层（M5a）：消歧先验的学习与加权；缺省无记忆，行为与无此层一致 */
+  memory?: MemoryStore;
   /** 计时器；默认系统时钟，测试注入手动时钟 */
   timer?: Timer;
   /** 日志；故障被吞掉前记录（DESIGN §8.1） */

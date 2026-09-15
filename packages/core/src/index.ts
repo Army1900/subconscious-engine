@@ -20,6 +20,7 @@ export type {
   DataType,
   Detector,
   DetectorContext,
+  DisambiguationPrior,
   DropReason,
   EngineLimits,
   EngineOptions,
@@ -35,7 +36,10 @@ export type {
   LogEntry,
   LogLevel,
   Logger,
+  MemoryData,
+  MemoryStore,
   PermissionLevel,
+  PersonalPhrase,
   ReadRequest,
   Resolution,
   ResolveContext,
@@ -55,6 +59,27 @@ export { RuleDetector, createRuleDetector, isAsyncDetector } from "./detector.js
 export { DataSourceRegistry, isDataType } from "./registry.js";
 export { InMemoryGrantStore } from "./grants.js";
 export { FileGrantStore } from "./file-grants.js";
+export {
+  autoResolvePriorCandidate,
+  disambiguationWeights,
+  exportMemory,
+  FileMemoryStore,
+  importMemory,
+  InMemoryMemoryStore,
+  isDisambiguationPrior,
+  isPersonalPhrase,
+  MAX_DISAMBIGUATION_RECORDS,
+  MAX_HINT_CHARS,
+  MAX_PHRASES,
+  MAX_PHRASE_CHARS,
+  parseMemoryData,
+  PRIOR_AUTO_DOMINANCE,
+  PRIOR_AUTO_MIN_PICKS,
+  PRIOR_WINDOW_DAYS,
+  rankByPrior,
+} from "./memory.js";
+export type { PriorAutoResolution, PriorWeight } from "./memory.js";
+export { createPersonalPhraseDetector, PERSONAL_PHRASE_CONFIDENCE } from "./phrase-detector.js";
 export { UNSUPPORTED_INTERACT, guardInteract } from "./interact.js";
 export type { GuardedInteract, GuardedInteractOptions } from "./interact.js";
 export { createDeadlineClock } from "./clock.js";

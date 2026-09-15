@@ -2,7 +2,7 @@
 
 在用户话语到达模型前，本地识别“上次”“这个文件”“一样的错误处理”等悬空指代，并在有证据时注入可追溯的上下文。无法可靠解析时保持原话，不猜测。
 
-## 能力（M1–M4）
+## 能力（M1–M5a）
 
 ### 核心引擎（`@subconscious/core`，零运行时依赖）
 
@@ -22,6 +22,28 @@
 - pi：真实 pi `SessionManager` 读写 fixture 会话（临时目录），不触碰 `~/.pi`；会话内容按 edit/write diff 提取。
 - claude：stdin hook JSON → stdout 合法 hook JSON，日志仅 stderr；只登记 L0 数据源，`transcript` 内部结构无官方文档 → 历史内容诚实 not-found。
 - opencode：会话数据全走官方 SDK 客户端（`session.list/get/diff`），不直读内部存储；`@opencode-ai/plugin` 为 optional peer（type-only import，产物零宿主引用）。
+
+### 个人记忆层 v0（M5a：消歧先验 + 个人惯用语词典）
+
+记忆只服务**用户说出口的指代**，不做预测注入。位置 `~/.subconscious/memory.json`（与 grants.json 同目录；原子写，损坏 fail-open 为空记忆 = 行为等同今天）：
+
+```json
+{
+  "version": 1,
+  "disambiguation": [
+    { "projectKey": "/work/proj", "sessionId": "abc", "title": "错误处理改造", "at": "2026-09-14T10:00:00.000Z" }
+  ],
+  "phrases": [
+    { "phrase": "咱们那个摊子", "expectedType": "project", "hint": "指当前主力仓库（可选）" }
+  ]
+}
+```
+
+- **消歧先验**（`createEngine({ memory: store })`）：你在 select 消歧中亲选历史会话时记录一条先验（同项目、近期的选择权重高）；再次遇到多候选时按先验排序，仅当同项目同一会话 14 天内被选 ≥2 次且权重 ≥2× 次选时代选，注入标注 `（按你的常用选择）（来源：recent-sessions）` 可审计；否则照旧弹选择器并继续学习。先验绝不把你没提到的会话加进候选。
+- **个人惯用语词典**：`addPersonalPhrase()` 显式注册（或直接手工编辑 phrases 数组），`createPersonalPhraseDetector(检测器, 词条)` 接入检测——短语说出口才触发，命中产出带真实 span 的指代走正常解析；零词条时不包装（默认行为逐字节不变）。v0 不自动学习（错学成本不对称；自动学习与惯例蒸馏属 M5b）。
+- **查看 / 清除 / 迁移**：文件为两空格缩进 JSON，打开即可查看与手工编辑；删除文件即清零（或清空对应数组）；新电脑复制该文件即完成迁移，程序化迁移用 `exportMemory` / `importMemory` 纯函数。
+- **隐私**：内容是你自己选择的记录（项目路径 + 会话标题 + 自注册短语），本地存储、本地消费、不离开设备，按 L0 对待；引擎不传 `memory` 选项时不学习不读取，行为与无此层完全一致。上限：先验 100 条（写入时裁剪 14 天窗口外记录）、词条 200 条、短语 ≤64 字符。
+- 适配器暂未接线（存储由调用方显式传入路径，同 grants.json 先例）；接线归 M5b。
 
 ### 可选 embedding 检测器（`@subconscious/embedding-local`）
 

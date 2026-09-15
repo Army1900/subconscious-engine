@@ -5,7 +5,8 @@ export type EngineErrorCode =
   | "invalid-source"
   | "invalid-permission"
   | "invalid-limits"
-  | "invalid-detector-options";
+  | "invalid-detector-options"
+  | "invalid-memory";
 
 export class EngineConfigError extends Error {
   readonly code: EngineErrorCode;
