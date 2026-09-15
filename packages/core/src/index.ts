@@ -14,6 +14,7 @@ export type {
   ActiveEditorState,
   AsyncDetector,
   Candidate,
+  ConventionEntry,
   CwdSnapshot,
   DanglingRef,
   DataSource,
@@ -66,6 +67,7 @@ export {
   FileMemoryStore,
   importMemory,
   InMemoryMemoryStore,
+  isConvention,
   isDisambiguationPrior,
   isPersonalPhrase,
   MAX_DISAMBIGUATION_RECORDS,
@@ -79,6 +81,16 @@ export {
   rankByPrior,
 } from "./memory.js";
 export type { PriorAutoResolution, PriorWeight } from "./memory.js";
+// 项目惯例（M5c，D25）：常量供适配器蒸馏校验/展示；negation 匹配器供宿主复用同一窄模式
+export {
+  CONVENTIONS_SOURCE_ID,
+  CONVENTION_DECAY_DAYS,
+  conventionNegationMatches,
+  MAX_CONVENTIONS_PER_PROJECT,
+  MAX_CONVENTIONS_TOTAL,
+  MAX_CONVENTION_CONTENT_CHARS,
+  MAX_CONVENTION_EXPRESSION_CHARS,
+} from "./conventions.js";
 export { createPersonalPhraseDetector, PERSONAL_PHRASE_CONFIDENCE } from "./phrase-detector.js";
 export { UNSUPPORTED_INTERACT, guardInteract } from "./interact.js";
 export type { GuardedInteract, GuardedInteractOptions } from "./interact.js";

@@ -8,6 +8,7 @@ import { FileMemoryStore, importMemory } from "../src/memory.js";
 import { createPersonalPhraseDetector } from "../src/phrase-detector.js";
 import { cwdContextSource, recentSessionsSource } from "../src/sources/index.js";
 import type {
+  ConventionEntry,
   DisambiguationPrior,
   HostEnv,
   InteractPort,
@@ -66,7 +67,9 @@ function scriptedSelect(pick: (options: readonly string[]) => string): { interac
 /** 可编程记忆存储：记录学习写入，可注入先验、可模拟读取故障 */
 class FakeMemory implements MemoryStore {
   priors: DisambiguationPrior[] = [];
+  conventions: ConventionEntry[] = [];
   readonly records: DisambiguationPrior[] = [];
+  readonly hits: Array<{ projectKey: string; id: string; at: string }> = [];
   readonly calls: string[] = [];
   failRead = false;
 
@@ -87,6 +90,21 @@ class FakeMemory implements MemoryStore {
 
   async addPersonalPhrase(): Promise<void> {
     throw new Error("not used in engine tests");
+  }
+
+  async listConventions(projectKey: string): Promise<readonly ConventionEntry[]> {
+    this.calls.push(`listConventions:${projectKey}`);
+    if (this.failRead) throw new Error("memory unreadable");
+    return this.conventions.filter((c) => c.projectKey === projectKey);
+  }
+
+  async addConvention(): Promise<void> {
+    throw new Error("not used in engine tests");
+  }
+
+  async recordConventionHit(projectKey: string, id: string, at: string): Promise<void> {
+    this.calls.push(`hit:${projectKey}:${id}`);
+    this.hits.push({ projectKey, id, at });
   }
 }
 

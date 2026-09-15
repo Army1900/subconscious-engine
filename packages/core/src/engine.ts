@@ -1,4 +1,15 @@
 import { assemble, type DroppedItem, type ResolvedItem } from "./assembler.js";
+import {
+  activeConventions,
+  CONVENTIONS_SOURCE_ID,
+  conventionCandidate,
+  conventionDisplay,
+  conventionNegationMatches,
+  conventionPayload,
+  domainAnchoredConventions,
+  rankConventionsByRecency,
+} from "./conventions.js";
+import type { ConventionEntry } from "./types.js";
 import { createRuleDetector, isAsyncDetector } from "./detector.js";
 import { createDeadlineClock, type DeadlineClock } from "./clock.js";
 import { EngineConfigError, errorMessage } from "./errors.js";
@@ -355,16 +366,22 @@ async function runEnrich(prompt: string, env: HostEnv, run: RunContext): Promise
 
     let outcomes2: readonly RefOutcome[] = [];
     if (wave2.length > 0) {
-      if (binding === undefined || clock.expired()) {
-        // 无绑定不调用、不注入（D4.2）；预算耗尽同样不再触发任何源/交互（D3.2）。
-        // 原因取根因：预算耗尽优先于无绑定（wave 1 因超时而无法建立绑定时）。
-        const reason: DropReason = clock.expired() ? "budget-exhausted" : "no-binding";
-        outcomes2 = wave2.map((ref) => ({ ref, dropped: { refId: ref.id, reason } }));
-      } else {
-        outcomes2 = await Promise.all(
-          wave2.map(async (ref) => resolveRef(ref, env, makeCtx(binding), { clock, interact, run })),
-        );
-      }
+      // 每条 history-content 指代先过惯例（M5c，D25）：本项目有活跃惯例时惯例
+      // 优先于会话绑定（惯例是跨会话沉淀，语义上更强）；惯例不认领（返回 null：
+      // 无记忆/窄否定/无活跃惯例/读取故障）则完全走既有路径，行为与今天一致。
+      outcomes2 = await Promise.all(
+        wave2.map(async (ref) => {
+          const conventionOutcome = await tryResolveByConvention(ref, prompt, env, { clock, interact, run });
+          if (conventionOutcome !== null) return conventionOutcome;
+          if (binding === undefined || clock.expired()) {
+            // 无绑定不调用、不注入（D4.2）；预算耗尽同样不再触发任何源/交互（D3.2）。
+            // 原因取根因：预算耗尽优先于无绑定（wave 1 因超时而无法建立绑定时）。
+            const reason: DropReason = clock.expired() ? "budget-exhausted" : "no-binding";
+            return { ref, dropped: { refId: ref.id, reason } };
+          }
+          return resolveRef(ref, env, makeCtx(binding), { clock, interact, run });
+        }),
+      );
     }
 
     const resolvedItems: ResolvedItem[] = [];
@@ -521,7 +538,16 @@ async function runInteraction<T>(clock: DeadlineClock, fn: () => Promise<T>): Pr
 
 type PermissionOutcome = "allowed" | DropReason;
 
-async function checkPermission(source: DataSource, deps: ResolveRefDeps): Promise<PermissionOutcome> {
+/** 授权门可选项：confirmPrompt 覆盖默认文案（惯例首次注入点名内容/候选，D25/D-C） */
+interface PermissionOptions {
+  readonly confirmPrompt?: string;
+}
+
+async function checkPermission(
+  source: DataSource,
+  deps: ResolveRefDeps,
+  options: PermissionOptions = {},
+): Promise<PermissionOutcome> {
   const { clock, interact, run } = deps;
   const { logger } = run;
   switch (source.permission) {
@@ -537,7 +563,7 @@ async function checkPermission(source: DataSource, deps: ResolveRefDeps): Promis
       }
       if (granted) return "allowed";
       const answer = await runInteraction(clock, () =>
-        interact.confirm(`允许潜意识引擎读取数据源「${source.id}」？`),
+        interact.confirm(options.confirmPrompt ?? `允许潜意识引擎读取数据源「${source.id}」？`),
       );
       if (answer === "yes") {
         // 迟到回调不得写 grants（D3.3）：写之前检查引擎信号
@@ -570,6 +596,7 @@ async function resolveAmbiguous(
   sourceId: string,
   env: HostEnv,
   deps: ResolveRefDeps,
+  onPicked?: (candidate: Candidate) => Promise<void>,
 ): Promise<RefOutcome> {
   const { clock, interact, run } = deps;
   const drop = (reason: DropReason): RefOutcome => ({ ref, dropped: { refId: ref.id, reason } });
@@ -613,6 +640,7 @@ async function resolveAmbiguous(
   if (index < 0 || index >= ordered.length) return drop("user-cancelled");
   const candidate = ordered[index] as Candidate;
   await learnSelection(ref, candidate, env, deps);
+  await onPicked?.(candidate); // 调用方选中后副作用（惯例候选：命中回写）
   return { ref, resolved: { ref, value: candidate.value, display: candidate.label, sourceId } };
 }
 
@@ -651,6 +679,123 @@ async function learnSelection(
   } catch (err) {
     run.logger({ level: "warn", event: "memory-write-failed", refId: ref.id, detail: errorMessage(err) });
   }
+}
+
+// ---------------------------------------------------------------------------
+// 项目惯例解析（M5c，docs/CONVENTIONS.md §6/§7 + DECISIONS D25）
+// ---------------------------------------------------------------------------
+
+/** 惯例授权门用的 L1 声明（scope = 当前项目；grant 一次，撤销 = 删该条授权） */
+function conventionPermissionSource(projectKey: string): DataSource {
+  return {
+    id: CONVENTIONS_SOURCE_ID,
+    types: ["history-content"],
+    permission: "L1-grant-once",
+    grantScope: projectKey,
+    async resolve(): Promise<Resolution> {
+      return { status: "not-found" }; // 惯例不是注册数据源；resolve 永不经过此处（形状完备性）
+    },
+  };
+}
+
+/** 候选列表的确认文案摘要（有界：至多列 5 个 expression） */
+function conventionExpressionSummary(pool: readonly ConventionEntry[]): string {
+  const names = pool.slice(0, 5).map((c) => c.expression);
+  const suffix = pool.length > names.length ? "等" : "";
+  return `${names.join("、")}${suffix}`;
+}
+
+/**
+ * 命中回写（尽力而为）：lastHitAt/hitCount 由存储侧在写时更新与淘汰；
+ * 回写失败只记日志、不影响本次注入；迟到回调不落盘（D3.3 同源纪律）。
+ */
+async function recordConventionHit(entry: ConventionEntry, env: HostEnv, deps: ResolveRefDeps): Promise<void> {
+  const { clock, run } = deps;
+  if (clock.signal.aborted) return;
+  try {
+    await run.memory?.recordConventionHit(env.cwd, entry.id, new Date(run.timer.now()).toISOString());
+  } catch (err) {
+    run.logger({ level: "warn", event: "convention-hit-write-failed", refId: entry.id, detail: errorMessage(err) });
+  }
+}
+
+/**
+ * 惯例解析（引擎内确定性逻辑，与消歧先验同级，不是新数据源）：
+ * 1. 命中条件：history-content 指代（既有"照旧/老规矩"类内容指代检测）+ 本项目有活跃惯例；
+ * 2. 锚定（不猜测）：域锚（话语精确包含 expression）唯一即直取；无域锚时裸指代——
+ *    唯一活跃惯例直取，多条 → 候选列表问用户（绝不静默注入，D-F）；
+ * 3. 注入走 L1-grant-once（sourceId "conventions"、scope = projectKey）：未授权先确认
+ *    （有 interact 则 confirm，通过后按既有 grants 机制持久化）；拒绝/无确认通道 →
+ *    该指代受控丢弃/待确认降级，不阻塞其他指代；
+ * 4. 注入 display 注明生成出处，命中回写 lastHitAt/hitCount。
+ * 返回 null 表示惯例不认领该指代（无记忆/窄否定/无活跃惯例/读取故障/预算外），
+ * 调用方回退既有 session-content 路径，行为与今天一致（fail-open）。
+ */
+async function tryResolveByConvention(
+  ref: DanglingRef,
+  prompt: string,
+  env: HostEnv,
+  deps: ResolveRefDeps,
+): Promise<RefOutcome | null> {
+  const { clock, run } = deps;
+  const drop = (reason: DropReason): RefOutcome => ({ ref, dropped: { refId: ref.id, reason } });
+  if (run.memory === undefined || ref.expectedType !== "history-content") return null;
+  if (conventionNegationMatches(prompt)) return null; // D-D 窄否定：本轮跳过惯例解析，其余指代照常
+  if (clock.expired()) return null; // 预算红线交由既有路径标注根因（同因同果）
+
+  let stored: readonly ConventionEntry[] = [];
+  try {
+    stored = await run.memory.listConventions(env.cwd);
+  } catch (err) {
+    run.logger({ level: "warn", event: "memory-read-failed", detail: errorMessage(err) });
+    return null; // fail-open：回退既有路径
+  }
+  if (clock.expired()) return drop("budget-exhausted"); // 记忆读取后复查（D24 预算纪律同源）
+
+  const active = activeConventions(stored, run.timer.now());
+  if (active.length === 0) return null; // ghost/过期/异项目：本项目无活跃惯例，回退既有路径
+
+  // 锚定（§6.1）：域锚唯一即命中；无域锚时唯一活跃即命中；否则进入候选池
+  const anchored = domainAnchoredConventions(prompt, active);
+  const direct =
+    anchored.length === 1 ? (anchored[0] as ConventionEntry) : anchored.length === 0 && active.length === 1 ? (active[0] as ConventionEntry) : null;
+  const pool = anchored.length > 0 ? anchored : active;
+
+  // L1 授权门在注入与候选交互之前（授权是"源"的属性：一次授权覆盖本项目后续注入）
+  const confirmPrompt =
+    direct !== null
+      ? `按惯例「${direct.expression}」= ${direct.content} 注入？授权后本项目自动使用（可随时撤销）`
+      : `允许潜意识引擎使用本项目惯例？候选：${conventionExpressionSummary(pool)}（授权后本项目自动使用，可随时撤销）`;
+  const gate = await checkPermission(conventionPermissionSource(env.cwd), deps, { confirmPrompt });
+  if (gate !== "allowed") return drop(gate); // 拒绝/无通道/预算耗尽：不注入确定结论
+
+  if (direct !== null) {
+    await recordConventionHit(direct, env, deps);
+    return {
+      ref,
+      resolved: {
+        ref,
+        value: { type: "history-content", sessionId: direct.basedOnSessionId, diff: conventionPayload(direct) },
+        display: conventionDisplay(direct),
+        sourceId: CONVENTIONS_SOURCE_ID,
+      },
+    };
+  }
+
+  // 多惯例：候选列表（按近期命中排序），选中即注入该条并回写；取消/不可用 → 受控丢弃
+  const ordered = rankConventionsByRecency(pool);
+  const byId = new Map(ordered.map((entry) => [entry.id, entry]));
+  return resolveAmbiguous(
+    ref,
+    ordered.map(conventionCandidate),
+    CONVENTIONS_SOURCE_ID,
+    env,
+    deps,
+    async (candidate) => {
+      const entry = byId.get(candidate.id);
+      if (entry !== undefined) await recordConventionHit(entry, env, deps);
+    },
+  );
 }
 
 async function resolveAcquisition(

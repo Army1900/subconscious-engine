@@ -51,6 +51,8 @@ const PATTERNS: readonly RefPattern[] = [
   // ---- 中文：history-content（自然表述，盲区补齐轮；均要求显式历史指向形态）----
   // "按老规矩/照老规矩"：前缀动词必需（裸"老规矩"多为习俗义，无历史指向）
   { source: "(按|照|依|遵循|沿用)老规矩", flags: "g", type: "history-content", confidence: 0.85 },
+  // "照旧"：惯例/历史指向几乎唯一（原 M5c-1 验收发现的招牌短语 FN）
+  { source: "照旧", flags: "g", type: "history-content", confidence: 0.8 },
   // "照着 X 弄/改/清理"：宾语仅允许代词性成分（这/那±个/块）或直接动词，
   // "照着说明书装家具"类外部参照物（说明书+装）不触发
   { source: "照着(这|那)?(个|块)?(弄|改|清理|调整|处理|重构|写|来|做)", flags: "g", type: "history-content", confidence: 0.85 },

@@ -1,17 +1,34 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import {
+  CONVENTION_DECAY_DAYS,
+  MAX_CONVENTIONS_PER_PROJECT,
+  MAX_CONVENTIONS_TOTAL,
+  MAX_CONVENTION_CONTENT_CHARS,
+  MAX_CONVENTION_EXPRESSION_CHARS,
+} from "./conventions.js";
 import { EngineConfigError } from "./errors.js";
 import { isDataType } from "./registry.js";
 import { isNonEmptyString } from "./text.js";
-import type { Candidate, DisambiguationPrior, MemoryData, MemoryStore, PersonalPhrase } from "./types.js";
+import type {
+  Candidate,
+  ConventionEntry,
+  DisambiguationPrior,
+  MemoryData,
+  MemoryStore,
+  PersonalPhrase,
+} from "./types.js";
 
 /**
- * 个人记忆层 v0（M5a；DESIGN §11.3 红线 + docs/DECISIONS.md D24）：
+ * 个人记忆层（M5a D24 + M5c D25 惯例段）：
  * - 消歧先验：用户在 select 消歧中选定历史会话时记录 {项目、会话、标题、时间}；
  *   使用侧只做两件事——对既有候选加权排序、达门槛时保守代选（display 可审计）。
  *   绝不注入用户没提到的会话（预测注入红线）。
  * - 个人惯用语词典：{短语 → 期望类型}，只显式注册（addPersonalPhrase / 手工编辑），
  *   v0 不自动学习；命中仍要求"用户说出口"（短语在话语中出现）才触发。
+ * - 项目惯例（schema v2 conventions 段）：宿主 LLM 蒸馏、适配器校验后 addConvention
+ *   落盘；同名（同 projectKey+expression）后写胜，相同输出不洗 lastHitAt（防自增强）；
+ *   写时淘汰（90 天未命中 / 每项目 20 / 全局 200，均按 lastHitAt 最旧）。
  * - 持久化参照 FileGrantStore：临时文件 + rename 原子写，任何损坏/IO 故障 fail-open
  *   为空记忆（行为等同今天）。
  */
@@ -42,7 +59,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function emptyMemory(): MemoryData {
-  return { version: 1, disambiguation: [], phrases: [] };
+  return { version: 2, disambiguation: [], phrases: [], conventions: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +76,27 @@ export function isDisambiguationPrior(v: unknown): v is DisambiguationPrior {
   );
 }
 
+/** 惯例条目形状校验（上限与蒸馏提示词一致；标题允许为空，其余字段须齐全） */
+export function isConvention(v: unknown): v is ConventionEntry {
+  if (!isRecord(v)) return false;
+  return (
+    isNonEmptyString(v.id) &&
+    isNonEmptyString(v.projectKey) &&
+    isNonEmptyString(v.expression) &&
+    v.expression.length <= MAX_CONVENTION_EXPRESSION_CHARS &&
+    typeof v.content === "string" &&
+    v.content.length > 0 &&
+    v.content.length <= MAX_CONVENTION_CONTENT_CHARS &&
+    isNonEmptyString(v.basedOnSessionId) &&
+    typeof v.basedOnSessionTitle === "string" &&
+    typeof v.generatedAt === "string" &&
+    typeof v.lastHitAt === "string" &&
+    typeof v.hitCount === "number" &&
+    Number.isInteger(v.hitCount) &&
+    v.hitCount >= 0
+  );
+}
+
 export function isPersonalPhrase(v: unknown): v is PersonalPhrase {
   if (!isRecord(v)) return false;
   if (typeof v.phrase !== "string") return false;
@@ -69,17 +107,39 @@ export function isPersonalPhrase(v: unknown): v is PersonalPhrase {
   return true;
 }
 
-/** 严格校验并重建 MemoryData；任一条目/数量非法 → null（不产出半份数据） */
+/**
+ * 严格校验并重建 MemoryData；任一条目/数量非法 → null（不产出半份数据，D24 纪律）。
+ * schema v2（D25/D-E）：接受 version 1（conventions 视为空）与 version 2；
+ * 归一化输出恒为 v2（写路径恒写 v2）。旧版 core 读 v2 → version 校验失败 →
+ * fail-open 空记忆（其"version 不是 1 → 空"的既有测试即降级安全证据）。
+ */
 export function parseMemoryData(v: unknown): MemoryData | null {
   if (!isRecord(v)) return null;
-  if (v.version !== 1) return null;
+  if (v.version !== 1 && v.version !== 2) return null;
   if (!Array.isArray(v.disambiguation) || !Array.isArray(v.phrases)) return null;
   if (v.disambiguation.length > MAX_DISAMBIGUATION_RECORDS) return null;
   if (v.phrases.length > MAX_PHRASES) return null;
   if (!v.disambiguation.every(isDisambiguationPrior)) return null;
   if (!v.phrases.every(isPersonalPhrase)) return null;
+  let conventions: readonly ConventionEntry[] = [];
+  if (v.version === 2) {
+    if (!Array.isArray(v.conventions)) return null;
+    if (v.conventions.length > MAX_CONVENTIONS_TOTAL) return null;
+    if (!v.conventions.every(isConvention)) return null;
+    conventions = v.conventions.map((c) => ({
+      id: c.id,
+      projectKey: c.projectKey,
+      expression: c.expression,
+      content: c.content,
+      basedOnSessionId: c.basedOnSessionId,
+      basedOnSessionTitle: c.basedOnSessionTitle,
+      generatedAt: c.generatedAt,
+      lastHitAt: c.lastHitAt,
+      hitCount: c.hitCount,
+    }));
+  }
   return {
-    version: 1,
+    version: 2,
     disambiguation: v.disambiguation.map((p) => ({
       projectKey: p.projectKey,
       sessionId: p.sessionId,
@@ -91,6 +151,7 @@ export function parseMemoryData(v: unknown): MemoryData | null {
       expectedType: p.expectedType,
       ...(p.hint !== undefined ? { hint: p.hint } : {}),
     })),
+    conventions,
   };
 }
 
@@ -264,6 +325,78 @@ function upsertPhrase(data: MemoryData, normalized: PersonalPhrase): MemoryData 
 }
 
 // ---------------------------------------------------------------------------
+// 惯例写入纯变更（内存与文件实现共享；§7 衰减/冲突策略，全部写时执行、读侧无状态）
+// ---------------------------------------------------------------------------
+
+/**
+ * 写时淘汰与封顶：lastHitAt 无效或距今 > 90 天的条目淘汰（"老规矩"三个月没用即
+ * 过期）；每项目 ≤ MAX_CONVENTIONS_PER_PROJECT、全局 ≤ MAX_CONVENTIONS_TOTAL，
+ * 超限按 lastHitAt 最旧淘汰（并列取原序在前者）。输出保持原始顺序（确定性）。
+ */
+function pruneConventions(entries: readonly ConventionEntry[], now: number): readonly ConventionEntry[] {
+  const windowMs = CONVENTION_DECAY_DAYS * 86_400_000;
+  const timed = entries
+    .map((entry, index) => {
+      const parsed = Date.parse(entry.lastHitAt);
+      return { entry, index, t: Number.isNaN(parsed) ? Number.NaN : Math.min(parsed, now) };
+    })
+    .filter((x) => !Number.isNaN(x.t) && now - x.t <= windowMs);
+
+  const keep = new Set<number>();
+  const byProject = new Map<string, { entry: ConventionEntry; index: number; t: number }[]>();
+  for (const x of timed) {
+    const group = byProject.get(x.entry.projectKey) ?? [];
+    group.push(x);
+    byProject.set(x.entry.projectKey, group);
+  }
+  for (const group of byProject.values()) {
+    const selected =
+      group.length <= MAX_CONVENTIONS_PER_PROJECT
+        ? group
+        : [...group].sort((a, b) => b.t - a.t || a.index - b.index).slice(0, MAX_CONVENTIONS_PER_PROJECT);
+    for (const x of selected) keep.add(x.index);
+  }
+  if (keep.size > MAX_CONVENTIONS_TOTAL) {
+    const capped = [...keep]
+      .map((index) => timed.find((x) => x.index === index))
+      .filter((x): x is { entry: ConventionEntry; index: number; t: number } => x !== undefined)
+      .sort((a, b) => b.t - a.t || a.index - b.index)
+      .slice(0, MAX_CONVENTIONS_TOTAL);
+    keep.clear();
+    for (const x of capped) keep.add(x.index);
+  }
+  return timed.filter((x) => keep.has(x.index)).map((x) => x.entry);
+}
+
+/**
+ * 惯例 upsert（§7 冲突策略）：同项目同 expression——
+ * - expression+content 逐字节相同 → no-op（相同输出不洗 lastHitAt/generatedAt/hitCount，
+ *   防止蒸馏重放"洗时间"绕过衰减，同 D24 先验的自增强防线）；
+ * - 内容不同 → 后写胜，旧条整条替换（id、basedOn、generatedAt 一并更新，不留双活）。
+ */
+function upsertConvention(data: MemoryData, entry: ConventionEntry): MemoryData {
+  const index = data.conventions.findIndex(
+    (c) => c.projectKey === entry.projectKey && c.expression === entry.expression,
+  );
+  if (index < 0) return { ...data, conventions: [...data.conventions, entry] };
+  const existing = data.conventions[index] as ConventionEntry;
+  if (existing.content === entry.content) return data; // 相同输出：原样保留
+  const next = [...data.conventions];
+  next[index] = entry; // 后写胜：整条替换
+  return { ...data, conventions: next };
+}
+
+/** 命中回写纯变更：按（projectKey, id）定位，lastHitAt 更新、hitCount +1；未知定位 no-op */
+function hitConvention(data: MemoryData, projectKey: string, id: string, at: string): MemoryData {
+  if (Number.isNaN(Date.parse(at))) return data; // 非法回写时间：忽略（尽力而为）
+  const index = data.conventions.findIndex((c) => c.projectKey === projectKey && c.id === id);
+  if (index < 0) return data;
+  const next = [...data.conventions];
+  next[index] = { ...(next[index] as ConventionEntry), lastHitAt: at, hitCount: (next[index] as ConventionEntry).hitCount + 1 };
+  return { ...data, conventions: next };
+}
+
+// ---------------------------------------------------------------------------
 // 存储实现
 // ---------------------------------------------------------------------------
 
@@ -300,6 +433,27 @@ export class InMemoryMemoryStore implements MemoryStore {
       );
     }
     this.data = upsertPhrase(this.data, normalized);
+  }
+
+  async listConventions(projectKey: string): Promise<readonly ConventionEntry[]> {
+    return this.data.conventions.filter((c) => c.projectKey === projectKey);
+  }
+
+  async addConvention(entry: ConventionEntry): Promise<void> {
+    if (!isConvention(entry)) {
+      throw new EngineConfigError(
+        "invalid-memory",
+        `惯例非法：expression 需为 1..${MAX_CONVENTION_EXPRESSION_CHARS} 字、content 1..${MAX_CONVENTION_CONTENT_CHARS} 字、字段齐全且 hitCount 为非负整数`,
+      );
+    }
+    const upserted = upsertConvention(this.data, entry);
+    this.data = { ...upserted, conventions: pruneConventions(upserted.conventions, this.now()) };
+  }
+
+  async recordConventionHit(projectKey: string, id: string, at: string): Promise<void> {
+    const hit = hitConvention(this.data, projectKey, id, at);
+    if (hit === this.data) return; // 未命中定位：无变更
+    this.data = { ...hit, conventions: pruneConventions(hit.conventions, this.now()) };
   }
 }
 
@@ -358,6 +512,10 @@ export class FileMemoryStore implements MemoryStore {
     return (await this.read()).phrases;
   }
 
+  async listConventions(projectKey: string): Promise<readonly ConventionEntry[]> {
+    return (await this.read()).conventions.filter((c) => c.projectKey === projectKey);
+  }
+
   recordDisambiguation(entry: DisambiguationPrior): Promise<void> {
     if (!isDisambiguationPrior(entry)) return Promise.resolve(); // 引擎侧学习是尽力而为
     return this.run((data) => ({ data: appendPrior(data, entry, this.now()), value: undefined })).catch(
@@ -376,5 +534,28 @@ export class FileMemoryStore implements MemoryStore {
       );
     }
     return this.run((data) => ({ data: upsertPhrase(data, normalized), value: undefined }));
+  }
+
+  addConvention(entry: ConventionEntry): Promise<void> {
+    if (!isConvention(entry)) {
+      return Promise.reject(
+        new EngineConfigError(
+          "invalid-memory",
+          `惯例非法：expression 需为 1..${MAX_CONVENTION_EXPRESSION_CHARS} 字、content 1..${MAX_CONVENTION_CONTENT_CHARS} 字、字段齐全且 hitCount 为非负整数`,
+        ),
+      );
+    }
+    return this.run((data) => {
+      const upserted = upsertConvention(data, entry);
+      return { data: { ...upserted, conventions: pruneConventions(upserted.conventions, this.now()) }, value: undefined };
+    });
+  }
+
+  /** 命中回写（尽力而为）：读/写故障放弃本次回写，不影响调用方 */
+  recordConventionHit(projectKey: string, id: string, at: string): Promise<void> {
+    return this.run((data) => {
+      const hit = hitConvention(data, projectKey, id, at);
+      return { data: { ...hit, conventions: pruneConventions(hit.conventions, this.now()) }, value: undefined };
+    }).catch(() => undefined);
   }
 }

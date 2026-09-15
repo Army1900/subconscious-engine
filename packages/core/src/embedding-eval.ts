@@ -82,7 +82,7 @@ export const EMBEDDING_EVAL_SET: readonly EmbeddingEvalCase[] = [
   { prompt: "当前这个代码库是什么协议", expected: [{ text: "这个代码库", type: "project", origin: "embedding" }] },
   { prompt: "跟我刚复制的内容对比一下", expected: [{ text: "刚复制的内容", type: "text", origin: "embedding" }] },
   { prompt: "tidy it up the usual way", expected: [{ text: "the usual way", type: "history-content", origin: "embedding" }] },
-  { prompt: "照旧再跑一遍构建", expected: [{ text: "照旧", type: "history-content", origin: "embedding" }] },
+  { prompt: "照旧再跑一遍构建", expected: [{ text: "照旧", type: "history-content", origin: "rule" }] }, // 规则补齐照旧后迁移（监督者 2026-09-15，同老规矩先例）
   {
     prompt: "把刚才粘贴的那段发我看看",
     expected: [

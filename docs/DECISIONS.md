@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 1.7（M5a：新增 D24 个人记忆层 v0——消歧先验 + 个人惯用语词典） |
-| 关联 | [DESIGN.md](../DESIGN.md)、[SUPERVISION.md](SUPERVISION.md) |
+| 文档版本 | 1.8（M5c-1：新增 D25 项目惯例层 core——schema v2 + 解析接入） |
+| 关联 | [DESIGN.md](../DESIGN.md)、[SUPERVISION.md](SUPERVISION.md)、[CONVENTIONS.md](CONVENTIONS.md) |
 
 ---
 
@@ -315,3 +315,30 @@ DESIGN.md §10 里程碑表（M3 含"多指代并行解析"）与 SUPERVISION.md
 7. **范围与不接线声明**：本层交付于 core（类型 + FileMemoryStore/InMemoryMemoryStore + 纯函数 + 检测扩展 + 引擎 `memory` 选项，缺省不传 = 行为与无此层逐字节一致）。三个适配器**暂不接线**（同 D17 grants.json 先例：存储由调用方显式传入路径）；适配器接线（各宿主的 memory.json 路径解析与词典加载时机）与 M5b 一并处理。
 
 **设计目标保留**：不预测注入（先验只排序/代选既有候选，词典只在短语说出口时触发，两条红线各有测试锁定）；fail-open（记忆任何故障 = 无记忆，prompt 照常发出）；透明性（代选 display 标注、注入来源标注不变）；core 零运行时依赖（node:fs 仅出现在文件存储，同 file-grants）；封闭类型集不变（词条类型必须 `isDataType`）。
+
+## D25. M5c-1 项目惯例层（core）：schema v2、解析接入与六决策点裁定
+
+**问题**（M5b Part 2 设计稿 [CONVENTIONS.md](CONVENTIONS.md)，监督者 2026-09-15 裁定）：把"照旧 / 老规矩 / 按咱们那套"类指代解析为**蒸馏后的惯例值**而非绑到单次会话；六个决策点（D-A..D-F）待裁定，core 实现（存储 + 解析接入 + 红线测试）先行，适配器蒸馏接线归 M5c-2。
+
+**裁定**（监督者原裁定 + 本轮实现细化）：
+
+1. **D-A 蒸馏时机 = ①会话结束即蒸馏**（素材最新鲜、跨宿主立即可用；②惰性③混合留评审）。core 侧无蒸馏——蒸馏只发生在宿主事件、由宿主模型执行（M5c-2 接线），本轮只交付 `addConvention` 等可测落盘接口。
+2. **D-B 蒸馏质量评估进 `.supervision/`（人工标注小集），阈值不预置**。本轮不做评估，只保证可评估：`isConvention`/`parseMemoryData`/上限常量（`MAX_CONVENTION_EXPRESSION_CHARS` 等）全部导出，评估脚本可直接复用同一校验面。
+3. **D-C 注入授权 = ②L1-grant-once**：sourceId 固定 `conventions`、scope = projectKey（env.cwd）；未授权走既有 L1 确认路径（复用 `checkPermission`，确认文案点名惯例内容/候选），通过后按既有 grants 机制持久化，授权一次后续不打扰；无确认通道宿主 → `interaction-unsupported` 受控丢弃，由既有 D20.2 录制型端口转写为「待确认」块降级。蒸馏**写入**不需授权（本地文件），**注入**需要。
+4. **D-D 纠正 = ①手工编辑 memory.json + ③否定语单次跳过**：`conventionNegationMatches` 窄模式（`(别|不)(要|用)?(按|照|依|遵循|沿用)?(老规矩|惯例|照旧)`）命中则本轮跳过惯例解析（其余指代照常、内容指代回退既有会话绑定路径），不删惯例；"别的不说，按老规矩来""他不停按老规矩办事"等近邻干扰不命中（测试锁定）。
+5. **D-E schema = 并入 memory.json，version 2**（单一记忆文件 = 单一隐私面与迁移面）：`conventions: [{id, projectKey, expression, content, basedOnSessionId, basedOnSessionTitle, generatedAt, lastHitAt, hitCount}]`；v1 文件兼容读（conventions 视为空）、写恒 v2；旧 core 读 v2 → version 校验失败 → fail-open 空记忆（其既有"version 不是 1 → 空"测试即降级安全证据，本轮新增用例锁定 v2 文件可被新 core 读写往返）。
+6. **D-F 裸"照旧"多惯例 = 候选列表（ambiguous），绝不静默注入**：候选按 lastHitAt 降序稳定排序后走既有 select 消歧；选择器不可用 → interaction-unsupported 丢弃（无通道宿主经待确认块转问用户）。
+
+**实现要点（core，全部确定性、零 LLM、零新依赖）**：
+
+- **命中条件**：检测层零改动——既有 history-content 检测（"按老规矩/照着…弄/一样的…"模板或 embedding 臂）产出指代后，wave 2 每条 history-content 指代**先过惯例**（`tryResolveByConvention`），本项目无活跃惯例/窄否定/读取故障/无 memory → 返回 null 完全回退既有 session-content 路径（行为与今天逐字节一致，测试以双引擎输出 deep-equal 锁定）。
+- **锚定（不猜测）**：域锚 = 话语精确包含 expression（"照旧处理错误"不含「错误处理」即不锚——近义扩展属 embedding 臂，core 不猜）；域锚唯一即直取；无域锚时唯一活跃惯例直取；多惯例 → 候选列表。惯例优先于会话绑定（命中惯例时 session-content 零调用，测试锁定）。
+- **写时纪律（读侧无状态，存储实现内存/文件共享纯函数）**：90 天未命中（lastHitAt）淘汰、每项目 ≤20、全局 ≤200（均按 lastHitAt 最旧，超限是**淘汰**不是失败——与词条封顶语义不同）；同 projectKey+expression 后写胜（整条替换，id/basedOn/generatedAt 一并更新不留双活）；expression+content 逐字节相同 → no-op 不洗 lastHitAt/generatedAt/hitCount（防蒸馏重放"洗时间"绕过衰减，同 D24 自增强防线）；lastHitAt 无效时间写时受控淘汰。parse 侧沿用 D24"不产出半份数据"：v2 文件任一条目非法或超全局上限 → 整文件 null → 空记忆。
+- **读侧活跃过滤**：`activeConventions` 在引擎读取后过滤（90 天窗口、无效时间不活跃、未来时间按当下计）——只靠写时淘汰会有"无写入则过期惯例永存且可注入"的漏洞，读侧过滤使红线可端到端测试（91 天惯例不注入、连授权确认都不发起）。
+- **命中回写**：注入成功（直取或候选被亲选）→ `recordConventionHit(projectKey, id, at)` 更新 lastHitAt/hitCount + 写时淘汰；回写失败只记日志不影响本次注入；写前检查引擎信号已中止即不写（D3.3 迟到回调不落盘）。候选定位按（projectKey, id）双键——适配器自造 id 跨项目撞名也不串扰。
+- **注入形态**：display = `惯例：{expression} = {content}（惯例·生成于「{title}」会话 · 已用 {hitCount} 次）`（无标题回退会话 id），经组装器带 `（来源：conventions）` 标注；value 复用封闭集 history-content 形状（sessionId=basedOnSessionId、diff=`expression = content`），不新增 DataType（D1 封闭集纪律）。
+- **授权门细节**：L1 门在候选交互**之前**（授权是"源"的属性，一次授权覆盖本项目后续全部注入，含多惯例 select）；确认文案对录制型端口可读（点名内容/候选），使无通道宿主的待确认块有意义。
+
+**范围与遗留**：本轮只交付 core（types/memory/conventions/engine + 45 个新测试用例，全离线）；适配器蒸馏接线（session_shutdown/SessionEnd/session.idle → headless 蒸馏 → 校验 → addConvention）归 **M5c-2**。既有适配器传入的 memory store 即刻获得惯例解析能力（引擎侧行为），但蒸馏无入口，惯例只能手工编辑 memory.json 产生。core 零依赖不变（R4），无需新增 R 规则（check-deps 全绿）。
+
+**设计目标保留**：不预测注入（惯例只在既有内容指代被检出后参与解析；无指代零开销透传不因记忆改变）；fail-open（记忆读取/回写任何故障 = 回退既有路径或尽力而为）；透明性（display 出处 + 来源标注 + grants 可查可撤销）；封闭类型集不变；core 零依赖零 LLM（蒸馏在宿主，core 只存取与确定性解析）。

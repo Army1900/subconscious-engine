@@ -13,6 +13,7 @@ import type {
   Resolution,
   ResolveContext,
   ResolvedValue,
+  SessionRecord,
 } from "../src/types.js";
 
 /** 测试用 deferred：受控释放的 promise */
@@ -152,7 +153,7 @@ export function stubSource(spec: {
 }
 
 /** 已知会话内容 fixture */
-export function sessionRecordFixture(sessionId: string): { sessionId: string; changes: unknown[] } {
+export function sessionRecordFixture(sessionId: string): SessionRecord {
   return {
     sessionId,
     changes: [

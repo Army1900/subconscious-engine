@@ -34,7 +34,7 @@ async function pathFor(name: string): Promise<string> {
 }
 
 describe("FileMemoryStore（持久化）", () => {
-  it("跨实例恢复先验与词条；写入文件为 version:1 schema 且无残留临时文件", async () => {
+  it("跨实例恢复先验与词条；写入文件为 version:2 schema 且无残留临时文件", async () => {
     const file = await pathFor("memory.json");
     const first = new FileMemoryStore(file, fixedNow);
     await first.recordDisambiguation(prior("s2", 1));
@@ -45,8 +45,13 @@ describe("FileMemoryStore（持久化）", () => {
     await expect(restored.listPhrases()).resolves.toEqual([PHRASE]);
 
     const raw = await readFile(file, "utf8");
-    expect(JSON.parse(raw)).toEqual({ version: 1, disambiguation: [prior("s2", 1)], phrases: [PHRASE] });
-    expect(raw).toContain("\"version\": 1"); // 人可编辑的两空格缩进
+    expect(JSON.parse(raw)).toEqual({
+      version: 2,
+      disambiguation: [prior("s2", 1)],
+      phrases: [PHRASE],
+      conventions: [],
+    });
+    expect(raw).toContain("\"version\": 2"); // 写恒 v2（D25/D-E）；人可编辑的两空格缩进
     const leftovers = (await readdir(join(file, ".."))).filter((name) => name.endsWith(".tmp"));
     expect(leftovers).toEqual([]); // 原子写：不留临时文件
   });
@@ -62,11 +67,16 @@ describe("FileMemoryStore（持久化）", () => {
     await expect(store.listPhrases()).resolves.toEqual([{ phrase: "照旧", expectedType: "history-content" }]);
   });
 
-  it("version 不是 1 或数组形状非法 → 空记忆（不注入半可信条目）", async () => {
+  it("version 不在封闭集、或缺必需数组 → 空记忆（不注入半可信条目）", async () => {
     const file = await pathFor("memory.json");
-    await writeFile(file, JSON.stringify({ version: 2, disambiguation: [], phrases: [] }), "utf8");
+    await writeFile(file, JSON.stringify({ version: 3, disambiguation: [], phrases: [], conventions: [] }), "utf8");
     const store = new FileMemoryStore(file, fixedNow);
     await expect(store.listDisambiguation()).resolves.toEqual([]);
+    await expect(store.listPhrases()).resolves.toEqual([]);
+    await expect(store.listConventions("/work/proj")).resolves.toEqual([]);
+
+    // v2 缺 conventions 段同样非法（段在 v2 是必需的）
+    await writeFile(file, JSON.stringify({ version: 2, disambiguation: [], phrases: [] }), "utf8");
     await expect(store.listPhrases()).resolves.toEqual([]);
   });
 
@@ -137,9 +147,10 @@ describe("addPersonalPhrase（显式注册 API）", () => {
 
 describe("exportMemory / importMemory（可移植纯函数）", () => {
   const data = {
-    version: 1 as const,
+    version: 2 as const,
     disambiguation: [prior("s2", 1)],
     phrases: [PHRASE],
+    conventions: [],
   };
 
   it("round-trip：导出字符串再导入得到等值数据", () => {
@@ -164,9 +175,9 @@ describe("exportMemory / importMemory（可移植纯函数）", () => {
   });
 
   it("导出非法数据受控失败（显式 API，编程错误应暴露）", () => {
-    expect(() => exportMemory({ version: 1, disambiguation: [{ nope: true } as unknown as DisambiguationPrior], phrases: [] })).toThrow(
-      EngineConfigError,
-    );
+    expect(() =>
+      exportMemory({ version: 2, disambiguation: [{ nope: true } as unknown as DisambiguationPrior], phrases: [], conventions: [] }),
+    ).toThrow(EngineConfigError);
   });
 
   it("导入的文件可被 FileMemoryStore 直接采用（复制文件即迁移）", async () => {

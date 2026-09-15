@@ -305,11 +305,38 @@ export interface PersonalPhrase {
   hint?: string;
 }
 
-/** ~/.subconscious/memory.json 文件形状（version 1） */
+/**
+ * 项目工作惯例（M5c，D25）：会话结束时由宿主 LLM 蒸馏、适配器校验后落盘的
+ * 「老规矩」本体。解析侧只在用户说出口的内容指代（照旧/老规矩类）命中时注入，
+ * 注入走 L1-grant-once（sourceId "conventions"、scope 按项目）。
+ */
+export interface ConventionEntry {
+  id: string;
+  /** 项目标识（同 D24 先验：同项目 = 同路径字符串，精确匹配） */
+  projectKey: string;
+  /** 惯例名（≤16 字，领域名词，如「错误处理」） */
+  expression: string;
+  /** 惯例内容（≤120 字，可执行的具体描述） */
+  content: string;
+  /** 依据会话（蒸馏来源，display 溯源用） */
+  basedOnSessionId: string;
+  basedOnSessionTitle: string;
+  generatedAt: string;
+  /** 最近一次命中注入时间（衰减依据；新条目 = generatedAt） */
+  lastHitAt: string;
+  hitCount: number;
+}
+
+/**
+ * ~/.subconscious/memory.json 文件形状（version 2：新增 conventions 段，D25/D-E）。
+ * v1 文件兼容读（conventions 视为空）；写路径恒写 v2。旧版 core 读 v2 →
+ * 校验失败 → fail-open 空记忆（降级安全）。
+ */
 export interface MemoryData {
-  version: 1;
+  version: 2;
   disambiguation: readonly DisambiguationPrior[];
   phrases: readonly PersonalPhrase[];
+  conventions: readonly ConventionEntry[];
 }
 
 /**
@@ -323,6 +350,12 @@ export interface MemoryStore {
   listPhrases(): Promise<readonly PersonalPhrase[]>;
   /** 显式注册词条；非法词条受控失败（EngineConfigError "invalid-memory"） */
   addPersonalPhrase(entry: PersonalPhrase): Promise<void>;
+  /** 按项目列出惯例（存储内容原样返回；活跃过滤在引擎读侧，D25） */
+  listConventions(projectKey: string): Promise<readonly ConventionEntry[]>;
+  /** 蒸馏落盘；非法条目受控失败，同名（同 projectKey+expression）后写胜，写时淘汰/封顶 */
+  addConvention(entry: ConventionEntry): Promise<void>;
+  /** 命中回写（尽力而为）：按（projectKey, id）定位更新 lastHitAt/hitCount；未知 id no-op */
+  recordConventionHit(projectKey: string, id: string, at: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

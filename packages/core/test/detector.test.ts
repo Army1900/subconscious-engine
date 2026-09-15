@@ -115,6 +115,12 @@ describe("规则检测器：内容指代的自然表述（盲区补齐轮）", (
     expect(detect("老规矩先跑测试再说话")).toEqual([]);
   });
 
+  // ---- 照旧（惯例/历史指向几乎唯一）----
+  it("照旧 → history-content", () => {
+    expect(detect("照旧处理错误").map((r) => r.text)).toEqual(["照旧"]);
+    expect(detect("这个模块照旧来就行").map((r) => r.expectedType)).toEqual(["history-content"]);
+  });
+
   // ---- 照着 X 弄/改/清理（宾语只能是代词性成分或直接动词）----
   it("照着清理/照着弄/照着那个改 → history-content", () => {
     const refs = detect("把这个文件也照着清理一遍");
